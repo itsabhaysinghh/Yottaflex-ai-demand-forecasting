@@ -8,8 +8,7 @@ python-multipart>=0.0.18
 # Relational Database & ORM
 sqlalchemy>=2.0.36
 alembic>=1.14.0
-psycopg[binary]>=3.2.0
-psycopg2-binary>=2.9.10
+psycopg>=3.2.0
 
 # Data Engineering & Numerical Computing
 polars>=1.15.0
@@ -27,4 +26,3 @@ pytest-asyncio>=0.24.0
 pytest-cov>=6.0.0
 httpx>=0.28.0
 pandera>=0.21.0
-

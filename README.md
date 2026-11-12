@@ -89,8 +89,9 @@ A high-performance retail inventory intelligence and decision-support platform b
 
 ### Setup Steps
 
-1. **Activate Virtual Environment**:
+1. **Create and activate a virtual environment** from the repository root:
    ```powershell
+   python -m venv .venv
    .\.venv\Scripts\Activate.ps1
    ```
 
@@ -100,28 +101,45 @@ A high-performance retail inventory intelligence and decision-support platform b
    ```
 
 3. **Configure Environment Variables**:
-   Create or verify `.env` in the repository root:
+   Copy `.env.example` to `.env` in the repository root and set your local
+   PostgreSQL password. Keep `.env` local; it is excluded from Git.
    ```ini
    ENVIRONMENT=development
-   POSTGRES_USER=postgres
-   POSTGRES_PASSWORD=your_password
+   POSTGRES_USER=yottaflex
+   POSTGRES_PASSWORD=replace-with-your-local-password
    POSTGRES_DB=yottaflex_demand
    POSTGRES_HOST=localhost
    POSTGRES_PORT=5432
-   DATABASE_URL=postgresql+psycopg2://postgres:your_password@localhost:5432/yottaflex_demand
    RANDOM_SEED=20261022
    DATASET_PROFILE=dev
    ```
+   For Windows installations where Application Control blocks psycopg's
+   bundled native library, select the pure-Python implementation and expose
+   the installed PostgreSQL `bin` directory to the current PowerShell session:
+   ```powershell
+   $env:PSYCOPG_IMPL = "python"
+   $env:PATH = "C:\Program Files\PostgreSQL\18\bin;" + $env:PATH
+   ```
+   Adjust the PostgreSQL installation path if you are using another version.
 
-4. **Seed Database**:
+4. **Apply database migrations** from the repository root. This upgrades the
+   schema without dropping or recreating the database:
+   ```powershell
+   python -m alembic -c backend/alembic.ini upgrade head
+   python -m alembic -c backend/alembic.ini current
+   ```
+
+5. **Seed the development dataset**:
    ```powershell
    python scripts/seed_data.py dev
    ```
+   The command requires the schema to be at the current Alembic head. It skips
+   insertion when it detects the complete matching seed dataset and refuses to
+   write into a partially populated or conflicting database.
 
-5. **Start FastAPI Application Server**:
+6. **Start FastAPI Application Server** from the repository root:
    ```powershell
-   cd backend
-   uvicorn app.main:app --reload --port 8000
+   python -m uvicorn app.main:app --app-dir backend --reload --port 8000
    ```
    Interactive OpenAPI documentation available at: `http://localhost:8000/docs`
 
@@ -131,7 +149,7 @@ A high-performance retail inventory intelligence and decision-support platform b
 
 Run the test suite with Pytest:
 ```powershell
-pytest -v tests
+python -m pytest -v tests
 ```
 
 The test suite runs against an isolated, fast in-memory SQLite engine and tests:

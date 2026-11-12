@@ -1,6 +1,6 @@
 # Native Windows PostgreSQL Setup Guide
 
-This guide details how to install and run **PostgreSQL 16** natively as a Windows Service, without requiring Docker or Docker Desktop.
+This guide details how to install and run **PostgreSQL 16 or newer** natively as a Windows Service, without requiring Docker or Docker Desktop.
 
 ---
 
@@ -15,7 +15,7 @@ winget install --id PostgreSQL.PostgreSQL.16 --interactive
 The official EnterpriseDB graphical setup wizard will launch. Follow the prompts:
 - **Installation Directory**: `C:\Program Files\PostgreSQL\16` (default)
 - **Data Directory**: `C:\Program Files\PostgreSQL\16\data` (default)
-- **Password**: Set a master password for user `postgres` (e.g. `postgres` or `yottaflex_secure_password`).
+- **Password**: Set a strong, unique password for the PostgreSQL superuser and store it securely.
 - **Port**: `5432` (default)
 - **Locale**: `[Default locale]`
 
@@ -49,17 +49,17 @@ Stop-Service -Name "postgresql-x64-16"
 
 ## 3. Database Initialization for YottaFlex
 
-Once PostgreSQL is running, open PowerShell or Command Prompt to create the dedicated database and user:
+For a new installation only, create the application database and user if they do not
+already exist. Do not rerun these commands against an existing database or role.
 
 ```powershell
-# Connect as superuser 'postgres' and create the application database
-psql -U postgres -c "CREATE DATABASE yottaflex_demand;"
-```
-
-*(Optional)* Create a dedicated `yottaflex` user if you don't wish to use `postgres`:
-```powershell
-psql -U postgres -c "CREATE USER yottaflex WITH ENCRYPTED PASSWORD 'yottaflex_secure_password';"
-psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE yottaflex_demand TO yottaflex;"
+# Connect as superuser 'postgres' and run these commands for a fresh database
+psql -U postgres
+CREATE DATABASE yottaflex_demand;
+CREATE ROLE yottaflex LOGIN;
+\password yottaflex
+GRANT ALL PRIVILEGES ON DATABASE yottaflex_demand TO yottaflex;
+\q
 ```
 
 ---
@@ -69,15 +69,22 @@ psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE yottaflex_demand TO yottaf
 In the project root, edit `.env` to match your local PostgreSQL credentials:
 
 ```ini
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=your_chosen_password
+POSTGRES_USER=yottaflex
+POSTGRES_PASSWORD=replace-with-your-local-password
 POSTGRES_DB=yottaflex_demand
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
-
-# Database URL used by SQLAlchemy
-DATABASE_URL=postgresql+psycopg://postgres:your_chosen_password@localhost:5432/yottaflex_demand
 ```
 
-SQLAlchemy automatically parses this `DATABASE_URL` via environment variables.
+The application constructs a psycopg 3 SQLAlchemy URL from these values. Apply
+the Alembic migration and seed the database using the commands in the repository
+README; do not use `create_all()` as a substitute for migrations.
 
+On Windows systems where Application Control blocks psycopg's bundled native
+library, use the pure-Python implementation with the installed PostgreSQL
+client library in PowerShell before starting the application:
+
+```powershell
+$env:PSYCOPG_IMPL = "python"
+$env:PATH = "C:\Program Files\PostgreSQL\18\bin;" + $env:PATH
+```

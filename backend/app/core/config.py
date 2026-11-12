@@ -1,7 +1,7 @@
 from pathlib import Path
-from typing import List, Union
-from pydantic import computed_field
+from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import URL, make_url
 
 
 # Project root path (where .env is located)
@@ -30,8 +30,8 @@ class Settings(BaseSettings):
     APP_PORT: int = 8000
 
     # PostgreSQL Credentials
-    POSTGRES_USER: str = "postgres"
-    POSTGRES_PASSWORD: str = "yottaflex_secure_password"
+    POSTGRES_USER: str = "yottaflex"
+    POSTGRES_PASSWORD: str = ""
     POSTGRES_DB: str = "yottaflex_demand"
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 5432
@@ -54,26 +54,25 @@ class Settings(BaseSettings):
         "http://localhost:8000",
     ]
 
-    @computed_field
     @property
     def effective_database_url(self) -> str:
         """
-        Returns the configured DATABASE_URL or constructs the PostgreSQL connection string.
-        Defaults to postgresql+psycopg2 driver for maximum Windows OS compatibility.
+        Returns the configured URL, normalizing PostgreSQL connections to psycopg 3.
         """
         if self.DATABASE_URL:
-            # If specified as postgresql+psycopg://, adapt to postgresql+psycopg2 if needed
-            url = self.DATABASE_URL
-            if url.startswith("postgresql+psycopg://"):
-                url = url.replace("postgresql+psycopg://", "postgresql+psycopg2://", 1)
-            elif url.startswith("postgresql://"):
-                url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
-            return url
-        return (
-            f"postgresql+psycopg2://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
-            f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
-        )
+            url = make_url(self.DATABASE_URL)
+            if url.get_backend_name() == "postgresql":
+                url = url.set(drivername="postgresql+psycopg")
+            return url.render_as_string(hide_password=False)
+
+        return URL.create(
+            drivername="postgresql+psycopg",
+            username=self.POSTGRES_USER,
+            password=self.POSTGRES_PASSWORD,
+            host=self.POSTGRES_HOST,
+            port=self.POSTGRES_PORT,
+            database=self.POSTGRES_DB,
+        ).render_as_string(hide_password=False)
 
 
 settings = Settings()
-

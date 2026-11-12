@@ -2,7 +2,7 @@ import math
 import uuid
 from datetime import date
 from decimal import Decimal
-from typing import Optional, List
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 import pandas as pd
 from sqlalchemy import func, select
@@ -178,29 +178,44 @@ def run_forecasting_pipeline(
         ])
 
         # 1. Backtest Evaluation
-        try:
-            eval_res = ForecastingEngine.run_temporal_evaluation(
-                history_df=df,
-                model_name=payload.model_name,
-                test_horizon_days=min(14, len(df) // 4),
-                adjust_censoring=payload.adjust_censored_demand,
+        eval_res = ForecastingEngine.run_temporal_evaluation(
+            history_df=df,
+            model_name=payload.model_name,
+            test_horizon_days=min(14, len(df) // 4),
+            adjust_censoring=payload.adjust_censored_demand,
+        )
+        m = eval_res["metrics"]
+        evaluation_date = eval_res["test_min_date"]
+        evaluation_horizon = eval_res["test_horizon_days"]
+        db_eval = db.scalar(
+            select(ForecastEvaluation).where(
+                ForecastEvaluation.sku_id == sku_id,
+                ForecastEvaluation.store_id == store_id,
+                ForecastEvaluation.model_name == payload.model_name,
+                ForecastEvaluation.evaluation_date == evaluation_date,
+                ForecastEvaluation.horizon_days == evaluation_horizon,
             )
-            m = eval_res["metrics"]
+        )
+        if db_eval is None:
             db_eval = ForecastEvaluation(
                 sku_id=sku_id,
                 store_id=store_id,
                 model_name=payload.model_name,
-                evaluation_date=eval_res["test_min_date"],
-                horizon_days=eval_res["test_horizon_days"],
+                evaluation_date=evaluation_date,
+                horizon_days=evaluation_horizon,
                 mae=Decimal(str(m["mae"])),
                 rmse=Decimal(str(m["rmse"])),
                 wape=Decimal(str(m["wape"])),
                 bias=Decimal(str(m["bias"])),
                 sample_size=m["sample_size"],
             )
-            db.merge(db_eval)
-        except Exception:
-            pass
+            db.add(db_eval)
+        else:
+            db_eval.mae = Decimal(str(m["mae"]))
+            db_eval.rmse = Decimal(str(m["rmse"]))
+            db_eval.wape = Decimal(str(m["wape"]))
+            db_eval.bias = Decimal(str(m["bias"]))
+            db_eval.sample_size = m["sample_size"]
 
         # 2. Future Forecast Projections
         future_preds = ForecastingEngine.generate_future_forecast(
@@ -210,20 +225,40 @@ def run_forecasting_pipeline(
             adjust_censoring=payload.adjust_censored_demand,
         )
 
-        for p in future_preds:
-            fc = Forecast(
-                sku_id=sku_id,
-                store_id=store_id,
-                model_name=payload.model_name,
-                forecast_date=p["forecast_date"],
-                target_date=p["target_date"],
-                horizon_days=p["horizon_days"],
-                predicted_units=Decimal(str(p["predicted_units"])),
-                confidence_lower=Decimal(str(p["confidence_lower"])),
-                confidence_upper=Decimal(str(p["confidence_upper"])),
-                model_params=p["model_params"],
+        existing_forecasts = {
+            (forecast.forecast_date, forecast.target_date): forecast
+            for forecast in db.scalars(
+                select(Forecast).where(
+                    Forecast.sku_id == sku_id,
+                    Forecast.store_id == store_id,
+                    Forecast.model_name == payload.model_name,
+                )
             )
-            db.merge(fc)
+        }
+        for p in future_preds:
+            key = (p["forecast_date"], p["target_date"])
+            fc = existing_forecasts.get(key)
+            if fc is None:
+                fc = Forecast(
+                    sku_id=sku_id,
+                    store_id=store_id,
+                    model_name=payload.model_name,
+                    forecast_date=p["forecast_date"],
+                    target_date=p["target_date"],
+                    horizon_days=p["horizon_days"],
+                    predicted_units=Decimal(str(p["predicted_units"])),
+                    confidence_lower=Decimal(str(p["confidence_lower"])),
+                    confidence_upper=Decimal(str(p["confidence_upper"])),
+                    model_params=p["model_params"],
+                )
+                db.add(fc)
+                existing_forecasts[key] = fc
+            else:
+                fc.horizon_days = p["horizon_days"]
+                fc.predicted_units = Decimal(str(p["predicted_units"]))
+                fc.confidence_lower = Decimal(str(p["confidence_lower"]))
+                fc.confidence_upper = Decimal(str(p["confidence_upper"]))
+                fc.model_params = p["model_params"]
             forecasts_created += 1
 
     db.commit()
@@ -232,4 +267,3 @@ def run_forecasting_pipeline(
         message=f"Forecasting pipeline completed successfully. Generated {forecasts_created} projections.",
         success=True,
     )
-

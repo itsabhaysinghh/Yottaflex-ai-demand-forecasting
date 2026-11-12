@@ -182,6 +182,17 @@ def test_forecast_and_replenishment_pipeline_api(client, sample_master_data, db_
     assert fc_list.status_code == 200
     assert fc_list.json()["total"] >= 7
 
+    repeated_fc_res = client.post("/api/v1/forecasts/run", json={
+        "sku_id": str(sku.id),
+        "store_id": str(store.id),
+        "model_name": "seasonal_naive",
+        "horizon_days": 7,
+    })
+    assert repeated_fc_res.status_code == 200
+    refreshed_fc_list = client.get(f"/api/v1/forecasts?sku_id={sku.id}")
+    assert refreshed_fc_list.status_code == 200
+    assert refreshed_fc_list.json()["total"] == fc_list.json()["total"]
+
     # 2. Run Replenishment
     rec_res = client.post("/api/v1/recommendations/run", json={
         "store_id": str(store.id),
