@@ -135,7 +135,7 @@ export interface ForecastEvaluation {
   horizon_days: number
   mae: Numeric
   rmse: Numeric
-  wape: Numeric
+  wape: Numeric | null
   bias: Numeric
   sample_size: number
   sku_code?: string | null

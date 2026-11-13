@@ -212,7 +212,7 @@ Rupees (INR) using Indian number grouping.
 
 ### Prerequisites
 
-- Node.js 22.12 or newer (Node.js 24 is also supported by the current Vite toolchain)
+- Node.js 22.22.2+, 24.15+, or 26+ (supported by the current test tooling)
 - npm
 - The configured FastAPI service and native PostgreSQL database
 
@@ -239,9 +239,16 @@ documentation is at `http://localhost:8000/docs`.
 
 ```powershell
 Set-Location .\frontend
+npm test
 npm run lint
+npm exec -- tsc --noEmit -p tsconfig.app.json
 npm run build
 ```
+
+The Vitest suite exercises API error handling, forecast SKU search and
+pagination, and the undefined-WAPE display. API calls are mocked at the unit
+test boundary only; the application continues to use the configured FastAPI
+service for live data.
 
 ### Dashboard areas
 
