@@ -63,6 +63,7 @@ def list_inventory(
             )
             .label("row_num"),
         )
+        .where(PurchaseRecommendation.superseded_at.is_(None))
         .subquery()
     )
     available_units = case(

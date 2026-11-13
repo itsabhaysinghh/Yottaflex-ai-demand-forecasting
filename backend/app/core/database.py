@@ -41,6 +41,11 @@ def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        # A failed request can leave PostgreSQL transactions in an aborted
+        # state. Roll it back before returning the pooled connection.
+        db.rollback()
+        raise
     finally:
         db.close()
 

@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 import numpy as np
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -28,6 +29,15 @@ from app.schemas.common import PaginatedResponse, MessageResponse
 from app.engines.replenishment import ReplenishmentEngine
 
 router = APIRouter()
+ACTIVE_CYCLE_INDEX = "uq_purchase_recommendations_current_cycle"
+
+
+def _is_active_cycle_conflict(error: IntegrityError) -> bool:
+    original = error.orig
+    diagnostic = getattr(original, "diag", None)
+    sqlstate = getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)
+    constraint_name = getattr(diagnostic, "constraint_name", None)
+    return sqlstate == "23505" and constraint_name == ACTIVE_CYCLE_INDEX
 
 
 @router.get("", response_model=PaginatedResponse[PurchaseRecommendationResponse])
@@ -35,6 +45,7 @@ def list_recommendations(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=500),
     status_filter: Optional[str] = Query(default=None, alias="status"),
+    include_superseded: bool = Query(default=False),
     store_id: Optional[uuid.UUID] = None,
     sku_id: Optional[uuid.UUID] = None,
     db: Session = Depends(get_db),
@@ -61,6 +72,8 @@ def list_recommendations(
 
     if status_filter:
         query = query.where(PurchaseRecommendation.status == status_filter)
+    if not include_superseded:
+        query = query.where(PurchaseRecommendation.superseded_at.is_(None))
     if store_id:
         query = query.where(PurchaseRecommendation.store_id == store_id)
     if sku_id:
@@ -117,6 +130,12 @@ def review_recommendation(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Recommendation {rec_id} not found",
+        )
+
+    if rec.superseded_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Superseded recommendations cannot be reviewed.",
         )
 
     if rec.status in ["APPROVED", "REJECTED"]:
@@ -210,6 +229,7 @@ def run_replenishment_pipeline(
                     PurchaseRecommendation.sku_id == sku.id,
                     PurchaseRecommendation.store_id == store.id,
                     PurchaseRecommendation.recommendation_date == latest_date,
+                    PurchaseRecommendation.superseded_at.is_(None),
                 )
                 .limit(1)
             )
@@ -316,11 +336,11 @@ def run_replenishment_pipeline(
                 lead_time_std_dev=std_lt,
                 store_current_total_units=store_total_inv,
                 evaluation_date=latest_date,
+                enforce_capacity=payload.enforce_capacity,
             )
 
-            # Persist exceptions
-            for exc in exc_list:
-                db_exc = InventoryException(
+            db_exceptions = [
+                InventoryException(
                     sku_id=exc.get("sku_id"),
                     store_id=exc.get("store_id"),
                     supplier_id=exc.get("supplier_id"),
@@ -330,8 +350,8 @@ def run_replenishment_pipeline(
                     payload=exc["payload"],
                     is_resolved=False,
                 )
-                db.add(db_exc)
-                exceptions_created += 1
+                for exc in exc_list
+            ]
 
             # Persist recommendation
             if rec_data:
@@ -353,10 +373,24 @@ def run_replenishment_pipeline(
                     status=rec_data["status"],
                     explanation=rec_data["explanation"],
                 )
-                db.add(db_rec)
+                try:
+                    with db.begin_nested():
+                        db.add_all(db_exceptions)
+                        db.add(db_rec)
+                        db.flush()
+                except IntegrityError as error:
+                    if not _is_active_cycle_conflict(error):
+                        raise
+                    existing_cycles_skipped += 1
+                    continue
+
                 recommendations_created += 1
+                exceptions_created += len(db_exceptions)
                 if rec_data["status"] != "FLAGGED_EXCEPTION":
                     store_total_inv += rec_data["recommended_units"]
+            else:
+                db.add_all(db_exceptions)
+                exceptions_created += len(db_exceptions)
 
     db.commit()
 

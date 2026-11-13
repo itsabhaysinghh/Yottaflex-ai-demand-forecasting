@@ -2,7 +2,19 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict, TYPE_CHECKING
-from sqlalchemy import String, Integer, Numeric, Date, DateTime, Text, Uuid, ForeignKey, JSON
+from sqlalchemy import (
+    String,
+    Integer,
+    Numeric,
+    Date,
+    DateTime,
+    Text,
+    Uuid,
+    ForeignKey,
+    JSON,
+    Index,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 from app.models.base import TimestampMixin
@@ -11,7 +23,6 @@ if TYPE_CHECKING:
     from app.models.sku import SKU
     from app.models.store import Store
     from app.models.supplier import Supplier
-    from app.models.reorder_policy import ReorderPolicy
 
 
 class PurchaseRecommendation(Base, TimestampMixin):
@@ -19,6 +30,17 @@ class PurchaseRecommendation(Base, TimestampMixin):
     Explainable replenishment order recommendations with approval lifecycle.
     """
     __tablename__ = "purchase_recommendations"
+    __table_args__ = (
+        Index(
+            "uq_purchase_recommendations_current_cycle",
+            "sku_id",
+            "store_id",
+            "recommendation_date",
+            unique=True,
+            postgresql_where=text("superseded_at IS NULL"),
+            sqlite_where=text("superseded_at IS NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
@@ -63,6 +85,18 @@ class PurchaseRecommendation(Base, TimestampMixin):
     reviewed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     review_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    superseded_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey(
+            "purchase_recommendations.id",
+            name="fk_purchase_recommendations_superseded_by_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+        index=True,
+    )
+    supersession_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Relationships
     sku: Mapped["SKU"] = relationship("SKU", back_populates="recommendations")

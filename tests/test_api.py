@@ -1,7 +1,29 @@
 import pytest
 import uuid
 from decimal import Decimal
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
+
+
+def test_cors_headers_are_added_to_unhandled_server_errors():
+    from fastapi.testclient import TestClient
+    from app.core.database import get_db
+    from app.main import app, fastapi_app
+
+    def fail_database_dependency():
+        raise RuntimeError("test database failure")
+
+    fastapi_app.dependency_overrides[get_db] = fail_database_dependency
+    try:
+        with TestClient(app, raise_server_exceptions=False) as test_client:
+            response = test_client.get(
+                "/api/v1/overview",
+                headers={"Origin": "http://localhost:5173"},
+            )
+    finally:
+        fastapi_app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 500
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
 
 
 def test_health_check(client):
@@ -232,7 +254,7 @@ def test_recommendations_approval_lifecycle(client, sample_master_data, db_sessi
         sku_id=sku.id,
         store_id=store.id,
         supplier_id=supplier.id,
-        recommendation_date=date.today(),
+        recommendation_date=date.today() + timedelta(days=1),
         current_on_hand=8,
         current_on_order=0,
         net_inventory_position=8,
@@ -445,6 +467,47 @@ def test_inventory_uses_recommendation_rop_without_reorder_policy(
     assert item["inventory_status"] == "LOW"
 
 
+def test_superseded_recommendations_do_not_affect_active_inventory_metrics(
+    client, sample_master_data, db_session,
+):
+    import app.models as m
+
+    sku, store = _seed_classification_data(
+        db_session, sample_master_data, closing_stock=9, reorder_point=10,
+    )
+    active = db_session.query(m.PurchaseRecommendation).one()
+    db_session.add(m.PurchaseRecommendation(
+        sku_id=sku.id,
+        store_id=store.id,
+        supplier_id=sample_master_data["supplier"].id,
+        recommendation_date=date.today(),
+        current_on_hand=9,
+        current_on_order=0,
+        net_inventory_position=9,
+        lead_time_demand=Decimal("1.00"),
+        safety_stock=1,
+        reorder_point=1,
+        raw_order_quantity=1,
+        recommended_units=12,
+        total_cost=Decimal("30.00"),
+        status="PENDING",
+        explanation={},
+        created_at=datetime.now(timezone.utc) + timedelta(seconds=1),
+        superseded_at=datetime.now(timezone.utc),
+        superseded_by_id=active.id,
+        supersession_reason="Historical recommendation for test.",
+    ))
+    db_session.commit()
+
+    item = _inventory_item(client, sku, store)
+    overview = client.get("/api/v1/overview").json()
+
+    assert item["reorder_point"] == 10
+    assert item["inventory_status"] == "LOW"
+    assert overview["low_stock_products_count"] == 1
+    assert overview["pending_recommendations_count"] == 1
+
+
 def test_missing_recommendation_is_unknown_even_with_safety_stock_policy(
     client, sample_master_data, db_session,
 ):
@@ -526,6 +589,107 @@ def test_replenishment_runs_are_idempotent_for_same_inventory_cycle(
     assert "skipped 1 existing replenishment cycles" in second.json()["message"]
     assert db_session.query(m.PurchaseRecommendation).count() == 1
     assert db_session.query(m.PurchaseRecommendation).one().id == generated_id
+
+
+def _create_superseded_recommendation_pair(db_session, sample_master_data):
+    import app.models as m
+
+    sku = sample_master_data["sku"]
+    store = sample_master_data["store"]
+    supplier = sample_master_data["supplier"]
+    active = m.PurchaseRecommendation(
+        sku_id=sku.id,
+        store_id=store.id,
+        supplier_id=supplier.id,
+        recommendation_date=date.today(),
+        current_on_hand=0,
+        current_on_order=0,
+        net_inventory_position=0,
+        lead_time_demand=Decimal("70.00"),
+        safety_stock=5,
+        reorder_point=75,
+        raw_order_quantity=100,
+        recommended_units=108,
+        total_cost=Decimal("270.00"),
+        status="PENDING",
+        explanation={},
+    )
+    db_session.add(active)
+    db_session.flush()
+
+    superseded = m.PurchaseRecommendation(
+        sku_id=sku.id,
+        store_id=store.id,
+        supplier_id=supplier.id,
+        recommendation_date=date.today(),
+        current_on_hand=0,
+        current_on_order=0,
+        net_inventory_position=0,
+        lead_time_demand=Decimal("70.00"),
+        safety_stock=5,
+        reorder_point=75,
+        raw_order_quantity=100,
+        recommended_units=108,
+        total_cost=Decimal("270.00"),
+        status="PENDING",
+        explanation={},
+        superseded_at=datetime.now(timezone.utc),
+        superseded_by_id=active.id,
+        supersession_reason="Duplicate cycle retained for audit history.",
+    )
+    db_session.add(superseded)
+    db_session.commit()
+    return active, superseded
+
+
+def test_recommendation_list_hides_superseded_by_default_and_includes_history(
+    client, sample_master_data, db_session,
+):
+    active, superseded = _create_superseded_recommendation_pair(
+        db_session, sample_master_data,
+    )
+
+    active_response = client.get("/api/v1/recommendations")
+    assert active_response.status_code == 200
+    active_items = active_response.json()["items"]
+    assert [item["id"] for item in active_items] == [str(active.id)]
+    assert active_items[0]["superseded_at"] is None
+
+    history_response = client.get(
+        "/api/v1/recommendations?include_superseded=true",
+    )
+    assert history_response.status_code == 200
+    history_items = history_response.json()["items"]
+    assert {item["id"] for item in history_items} == {
+        str(active.id),
+        str(superseded.id),
+    }
+    superseded_item = next(
+        item for item in history_items if item["id"] == str(superseded.id)
+    )
+    assert superseded_item["superseded_by_id"] == str(active.id)
+    assert superseded_item["supersession_reason"] == (
+        "Duplicate cycle retained for audit history."
+    )
+
+
+def test_superseded_recommendation_cannot_be_reviewed(
+    client, sample_master_data, db_session,
+):
+    active, superseded = _create_superseded_recommendation_pair(
+        db_session, sample_master_data,
+    )
+
+    response = client.patch(
+        f"/api/v1/recommendations/{superseded.id}",
+        json={"status": "APPROVED", "reviewed_by": "Planner"},
+    )
+
+    assert response.status_code == 409
+    db_session.refresh(superseded)
+    assert superseded.status == "PENDING"
+    assert superseded.reviewed_by is None
+    assert active.status == "PENDING"
 
 
 @pytest.mark.parametrize("existing_status", ["APPROVED", "REJECTED"])

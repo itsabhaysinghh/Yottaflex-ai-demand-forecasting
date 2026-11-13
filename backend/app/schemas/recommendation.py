@@ -29,6 +29,9 @@ class PurchaseRecommendationResponse(PurchaseRecommendationBase):
     reviewed_by: str | None = None
     reviewed_at: datetime | None = None
     review_notes: str | None = None
+    superseded_at: datetime | None = None
+    superseded_by_id: uuid.UUID | None = None
+    supersession_reason: str | None = None
     created_at: datetime
     updated_at: datetime
     sku_code: str | None = None

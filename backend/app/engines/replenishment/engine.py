@@ -33,6 +33,7 @@ class ReplenishmentEngine:
         lead_time_std_dev: float,
         store_current_total_units: int,
         evaluation_date: date,
+        enforce_capacity: bool = True,
     ) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Evaluates a single SKU-Store pair for replenishment need.
@@ -111,7 +112,7 @@ class ReplenishmentEngine:
         status = "PENDING"
         capacity_flag = False
 
-        if recommended_units > remaining_capacity:
+        if enforce_capacity and recommended_units > remaining_capacity:
             capacity_flag = True
             if moq > remaining_capacity:
                 status = "FLAGGED_EXCEPTION"
@@ -190,6 +191,7 @@ class ReplenishmentEngine:
                 "current_store_utilization": store_current_total_units,
                 "remaining_capacity": remaining_capacity,
                 "capacity_breached": capacity_flag,
+                "enforced": enforce_capacity,
             },
         }
 

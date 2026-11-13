@@ -12,7 +12,7 @@ async def lifespan(app: FastAPI):
     # Shutdown tasks if needed
 
 
-app = FastAPI(
+fastapi_app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     description=(
@@ -22,20 +22,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Configure CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Register API v1 routes
-app.include_router(api_router, prefix="/api/v1")
+fastapi_app.include_router(api_router, prefix="/api/v1")
 
 
-@app.get("/", tags=["Health"])
+@fastapi_app.get("/", tags=["Health"])
 def root():
     return {
         "app": settings.APP_NAME,
@@ -45,7 +36,7 @@ def root():
     }
 
 
-@app.get("/health", tags=["Health"])
+@fastapi_app.get("/health", tags=["Health"])
 def health_check():
     return {
         "status": "healthy",
@@ -53,6 +44,16 @@ def health_check():
         "dataset_profile": settings.DATASET_PROFILE,
         "random_seed": settings.RANDOM_SEED,
     }
+
+
+# Wrap the complete application so CORS headers are also added to unhandled 500 responses.
+app = CORSMiddleware(
+    app=fastapi_app,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 if __name__ == "__main__":

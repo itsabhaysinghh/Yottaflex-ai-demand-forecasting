@@ -2,7 +2,6 @@ import { Suspense, lazy, useState } from 'react'
 import {
   AlertTriangle,
   Boxes,
-  ChevronDown,
   Command,
   LayoutDashboard,
   Menu,
@@ -101,13 +100,6 @@ export default function App() {
           ))}
         </div>
 
-        <div className="mt-auto border-t border-white/10 p-4">
-          <div className="flex items-center gap-3 rounded-lg p-2">
-            <div className="grid size-8 place-items-center rounded-full bg-slate-700 text-xs font-semibold text-white">YF</div>
-            <div className="min-w-0 flex-1"><p className="truncate text-xs font-medium text-slate-200">Planning workspace</p><p className="mt-0.5 text-[10px] text-slate-500">Demand & supply team</p></div>
-            <ChevronDown size={15} className="text-slate-500" />
-          </div>
-        </div>
       </aside>
 
       {mobileMenuOpen && <button className="fixed inset-0 z-20 bg-slate-950/40 md:hidden" aria-label="Close navigation overlay" onClick={() => setMobileMenuOpen(false)} />}

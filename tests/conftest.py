@@ -14,7 +14,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.core.database import Base, get_db
-from app.main import app
+from app.main import app, fastapi_app
 import app.models as m
 
 # In-memory SQLite engine for tests
@@ -62,10 +62,10 @@ def client(db_session):
         finally:
             pass
 
-    app.dependency_overrides[get_db] = override_get_db
+    fastapi_app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as test_client:
         yield test_client
-    app.dependency_overrides.clear()
+    fastapi_app.dependency_overrides.clear()
 
 
 @pytest.fixture

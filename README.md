@@ -123,11 +123,20 @@ A high-performance retail inventory intelligence and decision-support platform b
    Adjust the PostgreSQL installation path if you are using another version.
 
 4. **Apply database migrations** from the repository root. This upgrades the
-   schema without dropping or recreating the database:
+   schema without dropping or recreating the database. A fresh database can
+   upgrade directly to the head:
    ```powershell
    python -m alembic -c backend/alembic.ini upgrade head
    python -m alembic -c backend/alembic.ini current
    ```
+   For an existing database, first apply the recommendation metadata revision:
+   ```powershell
+   python -m alembic -c backend/alembic.ini upgrade e74b2c19a6f1
+   ```
+   Review and explicitly supersede duplicate active recommendation cycles while
+   preserving their rows, then upgrade to `head`. The uniqueness migration
+   refuses to proceed while active duplicates remain; it never chooses a
+   recommendation automatically.
 
 5. **Seed the development dataset**:
    ```powershell
@@ -152,7 +161,7 @@ Run the test suite with Pytest:
 python -m pytest -v tests
 ```
 
-The test suite runs against an isolated, fast in-memory SQLite engine and tests:
+The default test suite uses an isolated, fast in-memory SQLite engine and tests:
 - Data generator seed reproducibility and anomaly presence
 - Temporal leakage prevention
 - Stockout-censored demand unconstraining
@@ -160,6 +169,22 @@ The test suite runs against an isolated, fast in-memory SQLite engine and tests:
 - Safety stock, ROP, pack rounding, and MOQ constraints
 - Warehouse capacity overflow and discontinued SKU exceptions
 - REST API endpoint contracts and approval lifecycle
+
+PostgreSQL recommendation concurrency tests use a separate schema in a dedicated
+test database. Set `YOTTAFLEX_TEST_POSTGRES_URL` to a database whose name contains
+`test`, then run:
+```powershell
+python -m pytest -v tests/test_recommendation_postgres_integration.py
+```
+The tests create and drop only their uniquely named schema. They refuse to use
+the application database `yottaflex_demand` and only accept a local loopback
+PostgreSQL host.
+
+Recommendation supersession and cycle uniqueness are deliberately separate
+migrations. Apply the metadata migration, explicitly review and supersede any
+duplicate active cycles while preserving their rows, then apply the unique-index
+migration. The index migration aborts if duplicate active cycles remain; it
+never chooses or supersedes a recommendation automatically.
 
 ---
 

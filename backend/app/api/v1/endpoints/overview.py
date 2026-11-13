@@ -71,7 +71,10 @@ def get_overview_metrics(db: Session = Depends(get_db)):
     # Recommendations & Exceptions count
     pending_recs = db.scalar(
         select(func.count(PurchaseRecommendation.id))
-        .where(PurchaseRecommendation.status == "PENDING")
+        .where(
+            PurchaseRecommendation.status == "PENDING",
+            PurchaseRecommendation.superseded_at.is_(None),
+        )
     ) or 0
 
     critical_exc = db.scalar(
@@ -103,6 +106,7 @@ def get_overview_metrics(db: Session = Depends(get_db)):
                 )
                 .label("row_num"),
             )
+            .where(PurchaseRecommendation.superseded_at.is_(None))
             .subquery()
         )
         inventory_rows = db.execute(

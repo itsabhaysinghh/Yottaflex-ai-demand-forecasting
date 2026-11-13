@@ -140,3 +140,23 @@ def test_fractional_target_order_quantity_rounds_up():
     assert recommendation["raw_order_quantity"] == 13
     assert recommendation["recommended_units"] == 13
 
+
+def test_capacity_check_can_be_explicitly_disabled():
+    sku = {"id": uuid.uuid4(), "sku_code": "SKU-CAPACITY", "is_active": True, "pack_size": 10, "unit_cost": Decimal("5.00")}
+    store = {"id": uuid.uuid4(), "store_code": "STR-TIGHT", "warehouse_capacity_units": 100}
+    supplier_sku = {"supplier_id": uuid.uuid4(), "pack_size": 10, "minimum_order_quantity": 200, "unit_cost": Decimal("5.00")}
+
+    recommendation, exceptions = ReplenishmentEngine.evaluate_sku_store_replenishment(
+        sku=sku, store=store, supplier_sku=supplier_sku,
+        current_inventory={"closing_stock": 0, "in_transit_stock": 0, "reserved_stock": 0},
+        reorder_policy={"target_service_level": 0.95, "review_period_days": 7},
+        avg_daily_demand=15.0, demand_std_dev=3.0,
+        lead_time_days=5.0, lead_time_std_dev=1.0, store_current_total_units=95,
+        evaluation_date=date.today(), enforce_capacity=False,
+    )
+
+    assert recommendation is not None
+    assert recommendation["status"] == "PENDING"
+    assert recommendation["explanation"]["warehouse_capacity_check"]["enforced"] is False
+    assert exceptions == []
+

@@ -28,13 +28,26 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path.startsWith('http') ? path : `${API_BASE}${path}`, {
-    ...init,
-    headers: {
-      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-      ...init?.headers,
-    },
-  })
+  const url = path.startsWith('http') ? path : `${API_BASE}${path}`
+  let response: Response
+
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers: {
+        ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+        ...init?.headers,
+      },
+    })
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new ApiError(
+        `Unable to reach the API at ${API_ORIGIN}. Check that the backend is running and allows this frontend origin.`,
+        0,
+      )
+    }
+    throw error
+  }
 
   if (!response.ok) {
     const body = await response.json().catch(() => null) as { detail?: unknown; message?: string } | null
@@ -46,7 +59,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
           return String(issue)
         }).join('; ')
         : body?.message
-    throw new ApiError(detail || `Request failed (${response.status})`, response.status)
+    const message = detail || (
+      response.status >= 500
+        ? `The API could not complete this request (HTTP ${response.status}).`
+        : `Request failed (HTTP ${response.status}).`
+    )
+    throw new ApiError(message, response.status)
   }
 
   return response.json() as Promise<T>
