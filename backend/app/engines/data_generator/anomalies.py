@@ -1,6 +1,6 @@
 import uuid
 from datetime import date, timedelta
-from typing import List, Dict, Any
+from typing import Callable, List, Dict, Any
 
 
 def generate_labeled_anomalies(
@@ -11,6 +11,7 @@ def generate_labeled_anomalies(
     sales_records: List[Dict[str, Any]],
     inventory_records: List[Dict[str, Any]],
     reference_date: date,
+    id_factory: Callable[[str, str], uuid.UUID] | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Generates the five explicitly required labeled anomalies for auditing and testing:
@@ -21,13 +22,14 @@ def generate_labeled_anomalies(
     5. Forecast using future sales data (temporal data leakage).
     """
     exceptions = []
+    make_id = id_factory or (lambda entity, identity: uuid.uuid4())
 
     # 1. Stockout incorrectly interpreted as zero demand
     # Find a record with genuine stockout and inject an exception
     sample_sku = skus[0]
     sample_store = stores[0]
     exceptions.append({
-        "id": uuid.uuid4(),
+        "id": make_id("inventory_exception", "STOCKOUT_AS_ZERO_DEMAND"),
         "sku_id": sample_sku["id"],
         "store_id": sample_store["id"],
         "supplier_id": None,
@@ -50,7 +52,7 @@ def generate_labeled_anomalies(
     target_supp_sku = supplier_skus[0]
     pack_size = target_supp_sku["pack_size"] if target_supp_sku["pack_size"] > 1 else 12
     exceptions.append({
-        "id": uuid.uuid4(),
+        "id": make_id("inventory_exception", "PACK_SIZE_VIOLATION"),
         "sku_id": target_supp_sku["sku_id"],
         "store_id": sample_store["id"],
         "supplier_id": target_supp_sku["supplier_id"],
@@ -74,7 +76,7 @@ def generate_labeled_anomalies(
         inactive_sku["is_active"] = False
 
     exceptions.append({
-        "id": uuid.uuid4(),
+        "id": make_id("inventory_exception", "DISCONTINUED_SKU_ORDER"),
         "sku_id": inactive_sku["id"],
         "store_id": sample_store["id"],
         "supplier_id": target_supp_sku["supplier_id"],
@@ -92,7 +94,7 @@ def generate_labeled_anomalies(
 
     # 4. Negative lead time
     exceptions.append({
-        "id": uuid.uuid4(),
+        "id": make_id("inventory_exception", "NEGATIVE_LEAD_TIME"),
         "sku_id": target_supp_sku["sku_id"],
         "store_id": sample_store["id"],
         "supplier_id": target_supp_sku["supplier_id"],
@@ -109,7 +111,7 @@ def generate_labeled_anomalies(
 
     # 5. Forecast using future sales
     exceptions.append({
-        "id": uuid.uuid4(),
+        "id": make_id("inventory_exception", "FUTURE_LEAKAGE_FORECAST"),
         "sku_id": sample_sku["id"],
         "store_id": sample_store["id"],
         "supplier_id": None,

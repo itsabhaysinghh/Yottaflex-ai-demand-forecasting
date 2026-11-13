@@ -92,3 +92,38 @@ def test_croston_intermittent_forecaster():
     # Rate should be roughly demand_size / 3
     assert 2.0 <= point[0] <= 6.0
 
+
+
+@pytest.mark.parametrize(
+    ("actual", "predicted", "expected"),
+    [
+        ([0.0], [0.0], None),
+        ([0.0], [5.0], None),
+        ([10.0], [0.0], 1.0),
+        ([10.0, 20.0, 30.0, 40.0], [12.0, 18.0, 33.0, 41.0], 0.08),
+        ([0.0, 10.0, 0.0], [5.0, 8.0, 2.0], 0.9),
+    ],
+)
+def test_wape_handles_zero_and_mixed_actual_demand(actual, predicted, expected):
+    metrics = calculate_metrics(np.array(actual), np.array(predicted))
+    assert metrics["wape"] == expected
+
+
+def test_wape_is_undefined_for_empty_input():
+    metrics = calculate_metrics(np.array([]), np.array([]))
+    assert metrics["wape"] is None
+
+
+@pytest.mark.parametrize("series_length", [14, 17, 5])
+def test_exponential_smoothing_forecasts_from_next_seasonal_phase(series_length):
+    y = np.arange(1, series_length + 1, dtype=float)
+    forecaster = ExponentialSmoothingForecaster(season_length=7).fit(y)
+
+    point, _, _ = forecaster.predict(horizon_days=2)
+
+    expected = max(0.0, forecaster.level + forecaster.seasonals[series_length % 7])
+    next_expected = max(0.0, forecaster.level + forecaster.seasonals[(series_length + 1) % 7])
+    assert point[0] == pytest.approx(expected)
+    assert point[1] == pytest.approx(next_expected)
+    if series_length >= 14 and series_length % 7:
+        assert point[0] != pytest.approx(forecaster.level + forecaster.seasonals[0])

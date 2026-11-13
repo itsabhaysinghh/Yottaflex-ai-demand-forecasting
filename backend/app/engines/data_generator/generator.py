@@ -29,9 +29,15 @@ class SyntheticDataGenerator:
     def __init__(self, profile_name: str = "dev", seed: int = DEFAULT_SEED, end_date: date | None = None):
         self.profile: DatasetProfile = PROFILES.get(profile_name, PROFILES["dev"])
         self.seed = seed
+        self._id_namespace = uuid.uuid5(
+            uuid.NAMESPACE_URL, f"yottaflex:synthetic-data:{seed}"
+        )
         self.rng = np.random.default_rng(seed)
         self.end_date = end_date or date(2026, 11, 12)
         self.start_date = self.end_date - timedelta(days=self.profile.num_days - 1)
+
+    def _make_id(self, entity: str, identity: str) -> uuid.UUID:
+        return uuid.uuid5(self._id_namespace, f"{entity}:{identity}")
 
     def generate(self) -> Dict[str, Any]:
         """
@@ -53,6 +59,7 @@ class SyntheticDataGenerator:
             sales_records=sales_records,
             inventory_records=inventory_records,
             reference_date=self.end_date,
+            id_factory=self._make_id,
         )
 
         return {
@@ -95,7 +102,7 @@ class SyntheticDataGenerator:
             is_active = bool(self.rng.random() > 0.03)
 
             skus.append({
-                "id": uuid.uuid4(),
+                "id": self._make_id("sku", sku_code),
                 "sku_code": sku_code,
                 "name": f"{item_name} #{i+1}",
                 "category": cat,
@@ -125,7 +132,7 @@ class SyntheticDataGenerator:
                 capacity = int(self.rng.integers(10000, 20000))
 
             stores.append({
-                "id": uuid.uuid4(),
+                "id": self._make_id("store", store_code),
                 "store_code": store_code,
                 "name": f"Yotta Store {store_code} ({st_type.capitalize()})",
                 "store_type": st_type,
@@ -151,7 +158,7 @@ class SyntheticDataGenerator:
             reliability = round(float(self.rng.uniform(0.88, 0.99)), 2)
 
             suppliers.append({
-                "id": uuid.uuid4(),
+                "id": self._make_id("supplier", code),
                 "supplier_code": code,
                 "name": f"{name} {i+1}",
                 "contact_email": f"orders@{code.lower()}.yottaflex.internal",
@@ -175,7 +182,9 @@ class SyntheticDataGenerator:
             pack_size = sku["pack_size"]
 
             supplier_skus.append({
-                "id": uuid.uuid4(),
+                "id": self._make_id(
+                    "supplier_sku", f"{supp['supplier_code']}:{sku['sku_code']}"
+                ),
                 "supplier_id": supp["id"],
                 "sku_id": sku["id"],
                 "contract_lead_time_days": contract_lt,
@@ -196,7 +205,9 @@ class SyntheticDataGenerator:
             for sku in skus:
                 sl = self.rng.choice(service_levels, p=[0.2, 0.7, 0.1])
                 policies.append({
-                    "id": uuid.uuid4(),
+                    "id": self._make_id(
+                        "reorder_policy", f"{sku['sku_code']}:{store['store_code']}"
+                    ),
                     "sku_id": sku["id"],
                     "store_id": store["id"],
                     "target_service_level": sl,

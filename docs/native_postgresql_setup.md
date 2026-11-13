@@ -1,6 +1,6 @@
 # Native Windows PostgreSQL Setup Guide
 
-This guide details how to install and run **PostgreSQL 16 or newer** natively as a Windows Service, without requiring Docker or Docker Desktop.
+This guide details how to install and run **PostgreSQL 16 or newer** natively as a Windows Service.
 
 ---
 

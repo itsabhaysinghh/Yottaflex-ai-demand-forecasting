@@ -19,7 +19,12 @@ class InventorySnapshotResponse(InventorySnapshotBase):
     id: int
     created_at: datetime
     sku_code: str | None = None
+    sku_name: str | None = None
+    category: str | None = None
     store_code: str | None = None
+    available_units: int | None = None
+    reorder_point: int | None = None
+    safety_stock_units: int | None = None
+    inventory_status: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
-

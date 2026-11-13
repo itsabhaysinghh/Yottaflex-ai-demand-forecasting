@@ -5,6 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.database import get_db
 from app.models.exception import InventoryException
@@ -87,6 +88,7 @@ def resolve_exception(
         if not exc.payload:
             exc.payload = {}
         exc.payload["resolution_notes"] = payload.resolution_notes
+        flag_modified(exc, "payload")
 
     db.commit()
     db.refresh(exc)

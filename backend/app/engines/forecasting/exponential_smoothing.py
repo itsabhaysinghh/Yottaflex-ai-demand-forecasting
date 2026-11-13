@@ -17,9 +17,11 @@ class ExponentialSmoothingForecaster(BaseForecaster):
         self.level = 0.0
         self.seasonals = np.ones(season_length)
         self.std_demand = 0.5
+        self.observations_count = 0
 
     def fit(self, y: np.ndarray, **kwargs) -> "ExponentialSmoothingForecaster":
         y = np.asarray(y, dtype=float)
+        self.observations_count = len(y)
         L = self.season_length
         if len(y) < L * 2:
             # Fallback to simple exponential smoothing when series is short
@@ -55,7 +57,7 @@ class ExponentialSmoothingForecaster(BaseForecaster):
         L = self.season_length
         point = np.zeros(horizon_days)
         for h in range(horizon_days):
-            s_idx = h % L
+            s_idx = (self.observations_count + h) % L
             point[h] = max(0.0, self.level + self.seasonals[s_idx])
 
         lower = np.maximum(0.0, point - 1.282 * self.std_demand)

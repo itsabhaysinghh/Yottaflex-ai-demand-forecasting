@@ -81,6 +81,8 @@ def list_forecast_evaluations(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=500),
     model_name: Optional[str] = None,
+    store_id: Optional[uuid.UUID] = None,
+    sku_id: Optional[uuid.UUID] = None,
     db: Session = Depends(get_db),
 ):
     query = (
@@ -95,6 +97,10 @@ def list_forecast_evaluations(
 
     if model_name:
         query = query.where(ForecastEvaluation.model_name == model_name)
+    if store_id:
+        query = query.where(ForecastEvaluation.store_id == store_id)
+    if sku_id:
+        query = query.where(ForecastEvaluation.sku_id == sku_id)
 
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     total_pages = math.ceil(total / page_size) if total > 0 else 1
@@ -205,7 +211,9 @@ def run_forecasting_pipeline(
                 horizon_days=evaluation_horizon,
                 mae=Decimal(str(m["mae"])),
                 rmse=Decimal(str(m["rmse"])),
-                wape=Decimal(str(m["wape"])),
+                wape=(
+                    Decimal(str(m["wape"])) if m["wape"] is not None else None
+                ),
                 bias=Decimal(str(m["bias"])),
                 sample_size=m["sample_size"],
             )
@@ -213,7 +221,9 @@ def run_forecasting_pipeline(
         else:
             db_eval.mae = Decimal(str(m["mae"]))
             db_eval.rmse = Decimal(str(m["rmse"]))
-            db_eval.wape = Decimal(str(m["wape"]))
+            db_eval.wape = (
+                Decimal(str(m["wape"])) if m["wape"] is not None else None
+            )
             db_eval.bias = Decimal(str(m["bias"]))
             db_eval.sample_size = m["sample_size"]
 

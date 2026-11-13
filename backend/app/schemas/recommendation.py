@@ -35,6 +35,8 @@ class PurchaseRecommendationResponse(PurchaseRecommendationBase):
     sku_name: str | None = None
     store_code: str | None = None
     supplier_name: str | None = None
+    minimum_order_quantity: int | None = None
+    pack_size: int | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -49,4 +51,3 @@ class RecommendationRunRequest(BaseModel):
     store_id: uuid.UUID | None = None
     sku_id: uuid.UUID | None = None
     enforce_capacity: bool = True
-

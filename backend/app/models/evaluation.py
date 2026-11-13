@@ -38,7 +38,7 @@ class ForecastEvaluation(Base):
     horizon_days: Mapped[int] = mapped_column(Integer, nullable=False)
     mae: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False)
     rmse: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False)
-    wape: Mapped[Decimal] = mapped_column(Numeric(6, 4), nullable=False)
+    wape: Mapped[Decimal | None] = mapped_column(Numeric(6, 4), nullable=True)
     bias: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False)
     sample_size: Mapped[int] = mapped_column(Integer, nullable=False)
 

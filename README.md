@@ -1,6 +1,6 @@
 # YottaFlex Demand Forecasting & Inventory Replenishment System
 
-A high-performance retail inventory intelligence and decision-support platform built with **Python 3.12**, **FastAPI**, **SQLAlchemy 2.0**, **PostgreSQL**, **Polars**, and **NumPy**.
+A high-performance retail inventory intelligence and decision-support platform built with **Python 3.12**, **FastAPI**, **SQLAlchemy 2.0**, **PostgreSQL**, and **NumPy**.
 
 ---
 
@@ -165,11 +165,96 @@ The test suite runs against an isolated, fast in-memory SQLite engine and tests:
 
 ## 5. Architectural Decisions & Trade-Offs
 
-1. **Native PostgreSQL vs. Containerization**:
-   PostgreSQL is configured as the primary production-grade database running as a native Windows service, eliminating Docker Desktop engine overhead during local development.
+1. **Native PostgreSQL**:
+   PostgreSQL runs as a native Windows service for local development.
 2. **Deterministic Seed (20261022)**:
    Guarantees that test assertions and benchmark runs remain reproducible across machines.
 3. **WAPE over MAPE**:
    Retail demand frequently includes zero-demand days (especially for slow-moving SKUs). Standard MAPE divides by zero ($y=0$), causing division errors or infinite penalties. WAPE ($\sum |y - \hat{y}| / \sum y$) provides a robust, scale-sensitive volume metric.
 4. **Decision-Support Guardrails**:
    Automated replenishment proposals remain in `PENDING` status and require human planner approval. Conflicting constraints (such as supplier MOQ exceeding store warehouse capacity) generate explicit `inventory_exceptions` rather than generating invalid purchase orders.
+
+---
+
+## 6. Web Dashboard
+
+The `frontend/` application is a React 19, TypeScript, Vite, Tailwind CSS 4,
+shadcn-style component, Recharts, and Lucide-based dashboard. It uses the
+FastAPI API for overview metrics, inventory snapshots, forecasts and evaluation,
+purchase recommendations, exceptions, SKUs, stores, and suppliers. It does not
+ship with mocked dashboard values. Monetary values are displayed in Indian
+Rupees (INR) using Indian number grouping.
+
+### Prerequisites
+
+- Node.js 22.12 or newer (Node.js 24 is also supported by the current Vite toolchain)
+- npm
+- The configured FastAPI service and native PostgreSQL database
+
+### Configure and run
+
+Keep the backend running as described above. In a separate PowerShell terminal:
+
+```powershell
+Set-Location .\frontend
+npm ci
+if (-not (Test-Path .env.local)) { Copy-Item .env.example .env.local }
+npm run dev
+```
+
+By default, `.env.example` points to `http://127.0.0.1:8000/api/v1`. Set
+`VITE_API_URL` in the local, untracked `frontend/.env.local` if the API runs at a
+different URL. The backend's default CORS configuration allows Vite at
+`localhost:5173` and `127.0.0.1:5173`.
+
+The dashboard is served at `http://localhost:5173`. FastAPI's interactive
+documentation is at `http://localhost:8000/docs`.
+
+### Frontend checks
+
+```powershell
+Set-Location .\frontend
+npm run lint
+npm run build
+```
+
+### Dashboard areas
+
+- **Overview**: API-backed portfolio KPIs, 30-day demand and stockout trends,
+  category inventory distribution, store capacity, open exceptions, and pending
+  recommendations.
+- **Inventory**: current snapshot search, category/store/status filters, sorting,
+  pagination, availability, inbound units, reorder point, and safety stock.
+- **Demand forecasting**: select an active SKU and store, choose one of the
+  supported models and horizon, run the persisted forecast/evaluation API, and
+  inspect historical demand, predictions, confidence bounds, MAE, RMSE, WAPE,
+  and bias.
+- **Replenishment**: run the existing capacity-aware replenishment API, inspect
+  its explanation and supplier MOQ/pack size, and approve or reject pending
+  recommendations with reviewer notes.
+- **Exceptions**: filter by severity and resolution state and record resolution.
+- **SKU catalog and suppliers**: read-only listings and available detail views;
+  supplier assortment includes contracted lead time, MOQ, pack size, and cost.
+
+### Known limitations
+
+- The API does not provide authentication or role-based access; reviewer names
+  are supplied by the planner.
+- SKU and supplier pages are read-only because the current API does not expose
+  catalog CRUD operations.
+- Forecast accuracy metrics are unavailable until the backend has persisted an
+  evaluation for the selected SKU/store pair.
+- Forecast and replenishment runs execute synchronously through the current API.
+
+---
+
+## 7. Submission Checklist
+
+- [ ] Start the backend and frontend locally and verify the live database is connected.
+- [ ] Capture test output from `python -m pytest -v tests`, `npm run lint`, and `npm run build`.
+- [ ] Record a demo of the overview, inventory, forecast, replenishment review, and exception workflows.
+- [ ] Prepare a short technical walkthrough of the forecasting, replenishment, data model, and API decisions.
+- [ ] Review the GitHub working tree and decide which local changes to stage and publish; changes from this work have not been committed or pushed.
+- [ ] Include the actual prompt history from the Copilot conversation if required by the submission; do not reconstruct or invent prompts.
+- [ ] Disclose AI assistance according to the submission's policy and include genuine test evidence.
+            

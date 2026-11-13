@@ -46,10 +46,17 @@ def list_recommendations(
             SKU.name.label("sku_name"),
             Store.store_code.label("store_code"),
             Supplier.name.label("supplier_name"),
+            SupplierSKU.minimum_order_quantity.label("minimum_order_quantity"),
+            SupplierSKU.pack_size.label("pack_size"),
         )
         .join(SKU, PurchaseRecommendation.sku_id == SKU.id)
         .join(Store, PurchaseRecommendation.store_id == Store.id)
         .join(Supplier, PurchaseRecommendation.supplier_id == Supplier.id)
+        .outerjoin(
+            SupplierSKU,
+            (SupplierSKU.sku_id == PurchaseRecommendation.sku_id)
+            & (SupplierSKU.supplier_id == PurchaseRecommendation.supplier_id),
+        )
     )
 
     if status_filter:
@@ -69,12 +76,22 @@ def list_recommendations(
     ).all()
 
     items = []
-    for rec, sku_code, sku_name, store_code, supp_name in rows:
+    for (
+        rec,
+        sku_code,
+        sku_name,
+        store_code,
+        supp_name,
+        minimum_order_quantity,
+        pack_size,
+    ) in rows:
         resp = PurchaseRecommendationResponse.model_validate(rec)
         resp.sku_code = sku_code
         resp.sku_name = sku_name
         resp.store_code = store_code
         resp.supplier_name = supp_name
+        resp.minimum_order_quantity = minimum_order_quantity
+        resp.pack_size = pack_size
         items.append(resp)
 
     return PaginatedResponse[PurchaseRecommendationResponse](
@@ -108,6 +125,15 @@ def review_recommendation(
             detail=f"Recommendation has already been reviewed ({rec.status}).",
         )
 
+    if rec.status == "FLAGGED_EXCEPTION" and payload.status == "APPROVED":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Capacity-flagged recommendations cannot be approved as purchase "
+                "orders. Resolve the associated warehouse-capacity exception first."
+            ),
+        )
+
     rec.status = payload.status
     rec.reviewed_by = payload.reviewed_by
     rec.review_notes = payload.review_notes
@@ -138,7 +164,7 @@ def run_replenishment_pipeline(
     ROP, calculates order quantity, rounds to pack size, checks MOQ, enforces
     store warehouse capacity, and flags exceptions.
     """
-    stores_query = select(Store).where(Store.is_active.is_(True))
+    stores_query = select(Store).where(Store.is_active.is_(True)).order_by(Store.id)
     if payload.store_id:
         stores_query = stores_query.where(Store.id == payload.store_id)
     stores = db.scalars(stores_query).all()
@@ -147,6 +173,7 @@ def run_replenishment_pipeline(
 
     recommendations_created = 0
     exceptions_created = 0
+    existing_cycles_skipped = 0
 
     for store in stores:
         # Calculate store's current total units on hand
@@ -159,12 +186,38 @@ def run_replenishment_pipeline(
         ) or 0
 
         # Query all active SKUs
-        sku_query = select(SKU).where(SKU.is_active.is_(True))
+        sku_query = select(SKU).where(SKU.is_active.is_(True)).order_by(SKU.id)
         if payload.sku_id:
             sku_query = sku_query.where(SKU.id == payload.sku_id)
         skus = db.scalars(sku_query).all()
 
         for sku in skus:
+            inv = db.scalar(
+                select(InventorySnapshot)
+                .where(
+                    InventorySnapshot.sku_id == sku.id,
+                    InventorySnapshot.store_id == store.id,
+                    InventorySnapshot.snapshot_date == latest_date,
+                )
+                .with_for_update()
+            )
+            if not inv:
+                continue
+
+            existing_cycle = db.scalar(
+                select(PurchaseRecommendation.id)
+                .where(
+                    PurchaseRecommendation.sku_id == sku.id,
+                    PurchaseRecommendation.store_id == store.id,
+                    PurchaseRecommendation.recommendation_date == latest_date,
+                )
+                .limit(1)
+            )
+            if existing_cycle is not None:
+                # A SKU/store/date is one replenishment cycle; keep prior reviews immutable.
+                existing_cycles_skipped += 1
+                continue
+
             # Sourcing info
             supp_sku = db.scalar(
                 select(SupplierSKU).where(
@@ -189,17 +242,8 @@ def run_replenishment_pipeline(
                     target_service_level=Decimal("0.950"),
                     review_period_days=7,
                 )
-
-            # Latest inventory
-            inv = db.scalar(
-                select(InventorySnapshot).where(
-                    InventorySnapshot.sku_id == sku.id,
-                    InventorySnapshot.store_id == store.id,
-                    InventorySnapshot.snapshot_date == latest_date,
-                )
-            )
-            if not inv:
-                continue
+                db.add(policy)
+                db.flush()
 
             # Demand history statistics (last 30 days)
             recent_sales = db.scalars(
@@ -311,14 +355,16 @@ def run_replenishment_pipeline(
                 )
                 db.add(db_rec)
                 recommendations_created += 1
+                if rec_data["status"] != "FLAGGED_EXCEPTION":
+                    store_total_inv += rec_data["recommended_units"]
 
     db.commit()
 
     return MessageResponse(
         message=(
             f"Replenishment run complete: generated {recommendations_created} recommendations "
-            f"and flagged {exceptions_created} exceptions."
+            f"and flagged {exceptions_created} exceptions; "
+            f"skipped {existing_cycles_skipped} existing replenishment cycles."
         ),
         success=True,
     )
-

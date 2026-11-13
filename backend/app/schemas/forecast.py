@@ -44,7 +44,7 @@ class ForecastEvaluationResponse(BaseModel):
     horizon_days: int
     mae: Decimal
     rmse: Decimal
-    wape: Decimal
+    wape: Decimal | None
     bias: Decimal
     sample_size: int
     sku_code: str | None = None
