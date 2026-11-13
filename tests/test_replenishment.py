@@ -94,3 +94,49 @@ def test_warehouse_capacity_conflict_exception():
     assert rec["status"] == "FLAGGED_EXCEPTION"
     assert any(e["exception_type"] == "MOQ_CAPACITY_CONFLICT" for e in exceptions)
 
+
+def test_fractional_target_order_quantity_rounds_up():
+    sku_id = uuid.uuid4()
+    store_id = uuid.uuid4()
+    supplier_id = uuid.uuid4()
+    sku = {
+        "id": sku_id,
+        "sku_code": "SKU-FRACTIONAL",
+        "is_active": True,
+        "pack_size": 1,
+        "unit_cost": Decimal("1.00"),
+    }
+    store = {
+        "id": store_id,
+        "store_code": "STR-001",
+        "warehouse_capacity_units": 1000,
+    }
+    supplier_sku = {
+        "supplier_id": supplier_id,
+        "pack_size": 1,
+        "minimum_order_quantity": 1,
+        "unit_cost": Decimal("1.00"),
+    }
+
+    recommendation, _ = ReplenishmentEngine.evaluate_sku_store_replenishment(
+        sku=sku,
+        store=store,
+        supplier_sku=supplier_sku,
+        current_inventory={"closing_stock": 0, "in_transit_stock": 0, "reserved_stock": 0},
+        reorder_policy={
+            "target_service_level": 0.95,
+            "review_period_days": 7,
+            "min_safety_stock_units": 0,
+        },
+        avg_daily_demand=1.5,
+        demand_std_dev=0,
+        lead_time_days=1,
+        lead_time_std_dev=0,
+        store_current_total_units=0,
+        evaluation_date=date.today(),
+    )
+
+    assert recommendation is not None
+    assert recommendation["raw_order_quantity"] == 13
+    assert recommendation["recommended_units"] == 13
+

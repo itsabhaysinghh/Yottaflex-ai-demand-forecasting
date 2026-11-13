@@ -262,7 +262,7 @@ export function ForecastPage() {
     try {
       const [salesResult, forecastResult, evaluationResult] = await Promise.all([
         api.sales({ sku_id: skuId, store_id: storeId, page_size: 500 }),
-        api.forecasts({ sku_id: skuId, store_id: storeId, page_size: 500 }),
+        api.forecasts({ sku_id: skuId, store_id: storeId, model_name: model, page_size: 500 }),
         api.evaluations({ sku_id: skuId, store_id: storeId, model_name: model, page_size: 500 }),
       ])
       setSales(salesResult.items)
@@ -333,12 +333,12 @@ export function ForecastPage() {
               disabled={!skus.length}
             >
               {selectedSku && !skus.some((item) => item.id === selectedSku.id) && (
-                <option value={selectedSku.id}>{selectedSku.sku_code} ? {selectedSku.name}</option>
+                <option value={selectedSku.id}>{selectedSku.sku_code} · {selectedSku.name}</option>
               )}
-              {skus.map((item) => <option key={item.id} value={item.id}>{item.sku_code} ? {item.name}</option>)}
+              {skus.map((item) => <option key={item.id} value={item.id}>{item.sku_code} · {item.name}</option>)}
             </Select>
             <span className="mt-1 flex items-center justify-between text-[11px] font-normal text-slate-500">
-              <span>{formatNumber(skuTotal)} active SKUs ? page {skuPage} of {skuTotalPages}</span>
+              <span>{formatNumber(skuTotal)} active SKUs · page {skuPage} of {skuTotalPages}</span>
               <span className="flex gap-2">
                 <button type="button" className="underline disabled:no-underline disabled:opacity-40" disabled={skuPage <= 1} onClick={() => setSkuPage((page) => page - 1)}>Previous</button>
                 <button type="button" className="underline disabled:no-underline disabled:opacity-40" disabled={skuPage >= skuTotalPages} onClick={() => setSkuPage((page) => page + 1)}>Next</button>

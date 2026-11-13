@@ -257,4 +257,3 @@ npm run build
 - [ ] Review the GitHub working tree and decide which local changes to stage and publish; changes from this work have not been committed or pushed.
 - [ ] Include the actual prompt history from the Copilot conversation if required by the submission; do not reconstruct or invent prompts.
 - [ ] Disclose AI assistance according to the submission's policy and include genuine test evidence.
-            

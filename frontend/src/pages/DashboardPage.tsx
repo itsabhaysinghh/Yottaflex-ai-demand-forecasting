@@ -79,7 +79,7 @@ export default function DashboardPage() {
     { label: 'Low-stock products', value: formatNumber(overview.low_stock_products_count), note: 'At or below reorder point', icon: PackageSearch, tone: 'amber' },
     { label: 'Pending orders', value: formatNumber(overview.pending_recommendations_count), note: 'Awaiting planner review', icon: PackageCheck, tone: 'blue' },
     { label: 'Forecast accuracy', value: overview.forecast_accuracy_pct == null ? '—' : `${formatNumber(overview.forecast_accuracy_pct, 1)}%`, note: 'Latest evaluation window', icon: Target, tone: 'teal' },
-    { label: 'Inventory health', value: overview.inventory_health_pct == null ? '—' : `${formatNumber(overview.inventory_health_pct, 1)}%`, note: 'Healthy SKU-store positions', icon: ShieldCheck, tone: 'green' },
+    { label: 'Inventory health', value: overview.inventory_health_pct == null ? '—' : `${formatNumber(overview.inventory_health_pct, 1)}%`, note: 'Among positions with a known status', icon: ShieldCheck, tone: 'green' },
   ] as const
 
   const demand = trends.demand_trend.map((point) => ({ ...point, label: point.date.slice(5) }))

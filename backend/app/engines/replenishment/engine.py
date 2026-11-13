@@ -1,3 +1,4 @@
+import math
 import uuid
 from datetime import date
 from decimal import Decimal
@@ -94,7 +95,7 @@ class ReplenishmentEngine:
         # Review cycle demand: demand expected during the review interval
         cycle_demand = avg_daily_demand * review_days
         target_inventory = rop + cycle_demand
-        raw_order_quantity = max(1, int(round(target_inventory - net_ip)))
+        raw_order_quantity = max(1, math.ceil(target_inventory - net_ip))
 
         # Enforce pack size and MOQ
         recommended_units, units_added, moq_triggered = enforce_pack_and_moq(
