@@ -167,6 +167,93 @@ def test_concurrent_replenishment_runs_create_one_active_cycle(postgres_schema):
     assert sum("skipped 1 existing replenishment cycles" in response.message for response in responses) == 1
 
 
+def test_concurrent_replenishment_runs_reserve_capacity_across_skus(postgres_schema):
+    session_factory = postgres_schema
+    with session_factory() as session:
+        first_sku, store, supplier, _ = _seed_cycle_inputs(session)
+        store.warehouse_capacity_units = 300
+        second_sku = m.SKU(
+            sku_code=f"SKU-{uuid.uuid4().hex[:12]}",
+            name="Second Capacity Test SKU",
+            category="Test",
+            unit_cost=Decimal("2.50"),
+            unit_price=Decimal("4.00"),
+            pack_size=12,
+            is_active=True,
+        )
+        session.add(second_sku)
+        session.flush()
+        session.add_all([
+            m.SupplierSKU(
+                supplier_id=supplier.id,
+                sku_id=second_sku.id,
+                contract_lead_time_days=7,
+                minimum_order_quantity=24,
+                pack_size=12,
+                unit_cost=Decimal("2.50"),
+                is_primary=True,
+            ),
+            m.ReorderPolicy(
+                sku_id=second_sku.id,
+                store_id=store.id,
+                target_service_level=Decimal("0.950"),
+                review_period_days=7,
+                min_safety_stock_units=5,
+            ),
+            m.InventorySnapshot(
+                sku_id=second_sku.id,
+                store_id=store.id,
+                snapshot_date=date.today(),
+                opening_stock=10,
+                closing_stock=0,
+                in_transit_stock=0,
+                reserved_stock=0,
+                stockout_flag=True,
+                lost_sales_estimate=10,
+            ),
+            m.SalesHistory(
+                sku_id=second_sku.id,
+                store_id=store.id,
+                sale_date=date.today(),
+                units_sold=10,
+                revenue=Decimal("40.00"),
+                is_promotion=False,
+                promotion_discount_pct=Decimal("0.00"),
+                day_of_week=date.today().weekday(),
+            ),
+        ])
+        session.commit()
+
+    barrier = Barrier(2)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(_run_cycle, session_factory, barrier, sku, store)
+            for sku in (first_sku, second_sku)
+        ]
+        responses = [future.result(timeout=30) for future in futures]
+
+    assert all(response.success for response in responses)
+    with session_factory() as session:
+        recommendations = session.scalars(
+            select(m.PurchaseRecommendation).where(
+                m.PurchaseRecommendation.store_id == store.id,
+                m.PurchaseRecommendation.recommendation_date == date.today(),
+                m.PurchaseRecommendation.superseded_at.is_(None),
+            )
+        ).all()
+
+    assert len(recommendations) == 2
+    assert sorted(rec.status for rec in recommendations) == [
+        "FLAGGED_EXCEPTION",
+        "PENDING",
+    ]
+    assert sum(
+        rec.recommended_units
+        for rec in recommendations
+        if rec.status in {"PENDING", "APPROVED"}
+    ) <= store.warehouse_capacity_units
+
+
 def test_unique_conflict_is_skipped_without_aborting_run(postgres_schema, monkeypatch):
     session_factory = postgres_schema
     with session_factory() as session:

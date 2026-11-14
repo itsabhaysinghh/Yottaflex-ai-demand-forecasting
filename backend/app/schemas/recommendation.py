@@ -50,7 +50,13 @@ class RecommendationReviewRequest(BaseModel):
     review_notes: str | None = Field(default=None, max_length=500)
 
 
+class RecommendationCorrectionRequest(BaseModel):
+    recommended_units: int = Field(..., ge=1)
+    corrected_by: str = Field(..., min_length=2, max_length=128)
+    correction_notes: str = Field(..., min_length=3, max_length=500)
+
+
 class RecommendationRunRequest(BaseModel):
     store_id: uuid.UUID | None = None
     sku_id: uuid.UUID | None = None
-    enforce_capacity: bool = True
+    model_config = ConfigDict(extra="forbid")

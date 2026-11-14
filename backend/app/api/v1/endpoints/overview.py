@@ -5,6 +5,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.engines.replenishment.classification import (
+    classify_inventory_position,
+    load_inventory_reorder_points,
+    reorder_point_expression,
+)
 from app.models.sku import SKU
 from app.models.store import Store
 from app.models.supplier import Supplier
@@ -12,7 +17,6 @@ from app.models.inventory import InventorySnapshot
 from app.models.sales import SalesHistory
 from app.models.recommendation import PurchaseRecommendation
 from app.models.exception import InventoryException
-from app.models.reorder_policy import ReorderPolicy
 from app.models.evaluation import ForecastEvaluation
 from app.schemas.dashboard import (
     DashboardTrendsResponse,
@@ -48,9 +52,20 @@ def get_overview_metrics(db: Session = Depends(get_db)):
         ) or 0
         active_stockouts = db.scalar(
             select(func.count(InventorySnapshot.id))
+            .join(SKU, SKU.id == InventorySnapshot.sku_id)
+            .join(Store, Store.id == InventorySnapshot.store_id)
             .where(
                 InventorySnapshot.snapshot_date == latest_inv_date,
-                InventorySnapshot.stockout_flag.is_(True),
+                SKU.is_active.is_(True),
+                Store.is_active.is_(True),
+                (
+                    InventorySnapshot.stockout_flag.is_(True)
+                    | (
+                        InventorySnapshot.closing_stock
+                        - InventorySnapshot.reserved_stock
+                        <= 0
+                    )
+                ),
             )
         ) or 0
     else:
@@ -88,6 +103,7 @@ def get_overview_metrics(db: Session = Depends(get_db)):
     low_stock_products = 0
     inventory_health_pct = None
     if latest_inv_date:
+        reorder_point_calculations = load_inventory_reorder_points(db)
         latest_recommendations = (
             select(
                 PurchaseRecommendation.sku_id,
@@ -109,6 +125,16 @@ def get_overview_metrics(db: Session = Depends(get_db)):
             .where(PurchaseRecommendation.superseded_at.is_(None))
             .subquery()
         )
+        calculated_reorder_point = reorder_point_expression(
+            reorder_point_calculations,
+            InventorySnapshot.sku_id,
+            InventorySnapshot.store_id,
+            "reorder_point",
+        )
+        effective_reorder_point = func.coalesce(
+            latest_recommendations.c.reorder_point,
+            calculated_reorder_point,
+        )
         inventory_rows = db.execute(
             select(
                 InventorySnapshot.sku_id,
@@ -116,16 +142,10 @@ def get_overview_metrics(db: Session = Depends(get_db)):
                 InventorySnapshot.in_transit_stock,
                 InventorySnapshot.reserved_stock,
                 InventorySnapshot.stockout_flag,
-                latest_recommendations.c.reorder_point,
+                effective_reorder_point.label("reorder_point"),
             )
             .join(SKU, SKU.id == InventorySnapshot.sku_id)
             .join(Store, Store.id == InventorySnapshot.store_id)
-            .outerjoin(
-                ReorderPolicy,
-                (ReorderPolicy.sku_id == InventorySnapshot.sku_id)
-                & (ReorderPolicy.store_id == InventorySnapshot.store_id)
-                & ReorderPolicy.is_active.is_(True),
-            )
             .outerjoin(
                 latest_recommendations,
                 (latest_recommendations.c.sku_id == InventorySnapshot.sku_id)
@@ -143,16 +163,19 @@ def get_overview_metrics(db: Session = Depends(get_db)):
         healthy_count = 0
         for row in inventory_rows:
             inventory_position = row.closing_stock + row.in_transit_stock - row.reserved_stock
-            #  Stockout status uses physical units.
-            is_stockout = row.stockout_flag or (row.closing_stock - row.reserved_stock) <= 0
-            if row.reorder_point is None and not is_stockout:
+            available_units = max(0, row.closing_stock - row.reserved_stock)
+            status = classify_inventory_position(
+                sku_is_active=True,
+                store_is_active=True,
+                stockout_flag=row.stockout_flag,
+                available_units=available_units,
+                inventory_position=inventory_position,
+                reorder_point=row.reorder_point,
+            )
+            if status == "UNKNOWN":
                 continue
             known_status_count += 1
-            is_low = is_stockout or (
-                row.reorder_point is not None
-                and inventory_position <= row.reorder_point
-            )
-            if is_low:
+            if status in {"STOCKOUT", "LOW"}:
                 low_stock_skus.add(row.sku_id)
             else:
                 healthy_count += 1

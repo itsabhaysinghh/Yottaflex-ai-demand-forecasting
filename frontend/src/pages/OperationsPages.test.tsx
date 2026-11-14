@@ -21,6 +21,7 @@ vi.mock('../lib/api', async (importOriginal) => {
       recommendations: vi.fn(),
       exceptions: vi.fn(),
       stores: vi.fn(),
+      correctRecommendation: vi.fn(),
       reviewRecommendation: vi.fn(),
       resolveException: vi.fn(),
     },
@@ -111,6 +112,7 @@ describe('dashboard and operational pages', () => {
     vi.mocked(api.recommendations).mockResolvedValue(page([]))
     vi.mocked(api.exceptions).mockResolvedValue(page([]))
     vi.mocked(api.stores).mockResolvedValue(page([store]))
+    vi.mocked(api.correctRecommendation).mockResolvedValue(recommendation)
     vi.mocked(api.reviewRecommendation).mockResolvedValue(recommendation)
     vi.mocked(api.resolveException).mockResolvedValue(exception)
   })
@@ -155,6 +157,34 @@ describe('dashboard and operational pages', () => {
         status: 'APPROVED',
         reviewed_by: 'Planner One',
         review_notes: undefined,
+      })
+    })
+  })
+
+  it('offers an audited correction path for capacity-flagged recommendations', async () => {
+    const flaggedRecommendation: Recommendation = {
+      ...recommendation,
+      status: 'FLAGGED_EXCEPTION',
+      explanation: {
+        warehouse_capacity_check: { capacity_breached: true },
+      },
+    }
+    vi.mocked(api.recommendations).mockResolvedValue(page([flaggedRecommendation]))
+
+    render(<RecommendationsPage />)
+
+    fireEvent.click(await screen.findByTitle('Correct capacity-flagged recommendation'))
+    await screen.findByRole('dialog')
+    fireEvent.change(screen.getByLabelText('Corrected quantity'), { target: { value: '8' } })
+    fireEvent.change(screen.getByLabelText('Correction planner name'), { target: { value: 'Planner One' } })
+    fireEvent.change(screen.getByLabelText('Correction notes'), { target: { value: 'Fits remaining capacity.' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create corrected replacement' }))
+
+    await waitFor(() => {
+      expect(api.correctRecommendation).toHaveBeenCalledWith(flaggedRecommendation.id, {
+        recommended_units: 8,
+        corrected_by: 'Planner One',
+        correction_notes: 'Fits remaining capacity.',
       })
     })
   })

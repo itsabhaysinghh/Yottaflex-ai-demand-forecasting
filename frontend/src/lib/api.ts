@@ -103,8 +103,10 @@ export const api = {
     request<{ message: string; success: boolean }>('/forecasts/run', { method: 'POST', body: JSON.stringify(payload) }),
   recommendations: (params: Record<string, string | number | boolean | null | undefined> = {}) =>
     request<Page<Recommendation>>(`/recommendations${queryString({ page: 1, page_size: 500, ...params })}`),
-  runReplenishment: (payload: { store_id?: string; sku_id?: string; enforce_capacity: boolean }) =>
+  runReplenishment: (payload: { store_id?: string; sku_id?: string }) =>
     request<{ message: string; success: boolean }>('/recommendations/run', { method: 'POST', body: JSON.stringify(payload) }),
+  correctRecommendation: (id: string, payload: { recommended_units: number; corrected_by: string; correction_notes: string }) =>
+    request<Recommendation>(`/recommendations/${id}/correct`, { method: 'POST', body: JSON.stringify(payload) }),
   reviewRecommendation: (id: string, payload: { status: 'APPROVED' | 'REJECTED'; reviewed_by: string; review_notes?: string }) =>
     request<Recommendation>(`/recommendations/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   exceptions: (params: Record<string, string | number | boolean | null | undefined> = {}) =>

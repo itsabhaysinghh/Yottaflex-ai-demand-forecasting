@@ -75,7 +75,8 @@ A high-performance retail inventory intelligence and decision-support platform b
 - **Constraint Enforcement**:
   - Rounds up to nearest integer multiple of supplier `pack_size`.
   - Enforces Minimum Order Quantity (MOQ).
-  - Validates physical store `warehouse_capacity_units`. If MOQ exceeds remaining capacity, flags a `MOQ_CAPACITY_CONFLICT` exception instead of generating an illegal order.
+  - Always enforces physical store `warehouse_capacity_units` against on-hand, in-transit, and active pending/approved recommendations. Over-capacity proposals are retained as `FLAGGED_EXCEPTION` with a capacity exception and cannot be approved.
+  - Planners can correct a flagged quantity through the recommendation API; the original is preserved as superseded history, and the replacement must satisfy MOQ, pack-size, and available-capacity checks.
 - **Explainability**: Every recommendation includes a structured audit dictionary explaining exact trigger reasons, math parameters, and constraint adjustments.
 - **Human Approval Lifecycle**: Proposals are stored in `PENDING` state and require human planner review (`APPROVED` or `REJECTED`) with audit timestamps and reviewer notes.
 
@@ -197,7 +198,7 @@ never chooses or supersedes a recommendation automatically.
 3. **WAPE over MAPE**:
    Retail demand frequently includes zero-demand days (especially for slow-moving SKUs). Standard MAPE divides by zero ($y=0$), causing division errors or infinite penalties. WAPE ($\sum |y - \hat{y}| / \sum y$) provides a robust, scale-sensitive volume metric.
 4. **Decision-Support Guardrails**:
-   Automated replenishment proposals remain in `PENDING` status and require human planner approval. Conflicting constraints (such as supplier MOQ exceeding store warehouse capacity) generate explicit `inventory_exceptions` rather than generating invalid purchase orders.
+   Automated replenishment proposals remain in `PENDING` status and require human planner approval. Capacity is mandatory; conflicting constraints generate explicit `inventory_exceptions` and flagged proposals. Resolving an exception alone does not permit approval; planners must create a capacity-compliant replacement, preserving the original recommendation as superseded history.
 
 ---
 

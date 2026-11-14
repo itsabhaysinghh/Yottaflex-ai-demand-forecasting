@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import date, datetime, timezone
 from decimal import Decimal
 import math
@@ -22,6 +23,7 @@ from app.models.sales import SalesHistory
 from app.models.lead_time import LeadTimeObservation
 from app.schemas.recommendation import (
     PurchaseRecommendationResponse,
+    RecommendationCorrectionRequest,
     RecommendationReviewRequest,
     RecommendationRunRequest,
 )
@@ -149,7 +151,8 @@ def review_recommendation(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 "Capacity-flagged recommendations cannot be approved as purchase "
-                "orders. Resolve the associated warehouse-capacity exception first."
+                "orders. Correct the quantity to create a capacity-compliant replacement; "
+                "resolving the exception alone does not make this recommendation approvable."
             ),
         )
 
@@ -171,6 +174,208 @@ def review_recommendation(
         resp.supplier_name = rec.supplier.name
 
     return resp
+
+
+@router.post(
+    "/{rec_id}/correct",
+    response_model=PurchaseRecommendationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def correct_capacity_recommendation(
+    rec_id: uuid.UUID,
+    payload: RecommendationCorrectionRequest,
+    db: Session = Depends(get_db),
+):
+    initial = db.get(PurchaseRecommendation, rec_id)
+    if not initial:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Recommendation {rec_id} not found",
+        )
+
+    store = db.scalar(
+        select(Store)
+        .where(Store.id == initial.store_id)
+        .with_for_update()
+    )
+    rec = db.scalar(
+        select(PurchaseRecommendation)
+        .where(PurchaseRecommendation.id == rec_id)
+        .with_for_update()
+    )
+    if not rec:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Recommendation {rec_id} not found",
+        )
+    if rec.superseded_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Superseded recommendations cannot be corrected.",
+        )
+    capacity_check = (rec.explanation or {}).get("warehouse_capacity_check")
+    if (
+        rec.status != "FLAGGED_EXCEPTION"
+        or not isinstance(capacity_check, dict)
+        or capacity_check.get("capacity_breached") is not True
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only capacity-flagged recommendations can be corrected.",
+        )
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The recommendation's store is unavailable; capacity cannot be validated.",
+        )
+
+    supplier_sku = db.scalar(
+        select(SupplierSKU).where(
+            SupplierSKU.sku_id == rec.sku_id,
+            SupplierSKU.supplier_id == rec.supplier_id,
+        )
+    )
+    if supplier_sku is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Supplier terms are unavailable; the recommendation cannot be corrected.",
+        )
+
+    latest_snapshot_date = db.scalar(
+        select(func.max(InventorySnapshot.snapshot_date)).where(
+            InventorySnapshot.store_id == rec.store_id,
+        )
+    )
+    if latest_snapshot_date is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The store has no inventory snapshot; capacity cannot be validated.",
+        )
+    existing_cycle = db.scalar(
+        select(PurchaseRecommendation.id)
+        .where(
+            PurchaseRecommendation.sku_id == rec.sku_id,
+            PurchaseRecommendation.store_id == rec.store_id,
+            PurchaseRecommendation.recommendation_date == latest_snapshot_date,
+            PurchaseRecommendation.id != rec.id,
+            PurchaseRecommendation.superseded_at.is_(None),
+        )
+        .limit(1)
+    )
+    if existing_cycle is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A recommendation already exists for the latest inventory cycle.",
+        )
+
+    pack_size = max(1, supplier_sku.pack_size)
+    minimum_pack_rounded_moq = math.ceil(supplier_sku.minimum_order_quantity / pack_size) * pack_size
+    if (
+        payload.recommended_units < minimum_pack_rounded_moq
+        or payload.recommended_units % pack_size != 0
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"Corrected quantity must be at least {minimum_pack_rounded_moq} units "
+                f"and a multiple of the supplier pack size ({pack_size})."
+            ),
+        )
+
+    current_store_units = db.scalar(
+        select(func.coalesce(
+            func.sum(InventorySnapshot.closing_stock + InventorySnapshot.in_transit_stock),
+            0,
+        )).where(
+            InventorySnapshot.store_id == rec.store_id,
+            InventorySnapshot.snapshot_date == latest_snapshot_date,
+        )
+    ) or 0
+    other_recommendation_units = db.scalar(
+        select(func.coalesce(func.sum(PurchaseRecommendation.recommended_units), 0)).where(
+            PurchaseRecommendation.store_id == rec.store_id,
+            PurchaseRecommendation.id != rec.id,
+            PurchaseRecommendation.superseded_at.is_(None),
+            PurchaseRecommendation.status.in_(["PENDING", "APPROVED"]),
+        )
+    ) or 0
+    remaining_capacity = max(
+        0,
+        store.warehouse_capacity_units
+        - int(current_store_units)
+        - int(other_recommendation_units),
+    )
+    if payload.recommended_units > remaining_capacity:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Corrected quantity of {payload.recommended_units} exceeds the "
+                f"remaining warehouse capacity of {remaining_capacity} units."
+            ),
+        )
+
+    now = datetime.now(timezone.utc)
+    explanation = deepcopy(rec.explanation or {})
+    order_adjustments = explanation.setdefault("order_adjustments", {})
+    order_adjustments["final_recommended_units"] = payload.recommended_units
+    explanation["warehouse_capacity_check"] = {
+        "total_store_capacity": store.warehouse_capacity_units,
+        "current_store_utilization": (
+            int(current_store_units) + int(other_recommendation_units)
+        ),
+        "remaining_capacity": remaining_capacity,
+        "capacity_breached": False,
+        "enforced": True,
+    }
+    explanation["capacity_correction"] = {
+        "corrected_by": payload.corrected_by,
+        "correction_notes": payload.correction_notes,
+        "corrected_at": now.isoformat(),
+        "original_recommended_units": rec.recommended_units,
+        "corrected_recommended_units": payload.recommended_units,
+        "inventory_snapshot_date": latest_snapshot_date.isoformat(),
+    }
+
+    replacement = PurchaseRecommendation(
+        sku_id=rec.sku_id,
+        store_id=rec.store_id,
+        supplier_id=rec.supplier_id,
+        reorder_policy_id=rec.reorder_policy_id,
+        recommendation_date=latest_snapshot_date,
+        current_on_hand=rec.current_on_hand,
+        current_on_order=rec.current_on_order,
+        net_inventory_position=rec.net_inventory_position,
+        lead_time_demand=rec.lead_time_demand,
+        safety_stock=rec.safety_stock,
+        reorder_point=rec.reorder_point,
+        raw_order_quantity=rec.raw_order_quantity,
+        recommended_units=payload.recommended_units,
+        total_cost=(
+            Decimal(str(supplier_sku.unit_cost)) * payload.recommended_units
+        ).quantize(Decimal("0.01")),
+        status="PENDING",
+        explanation=explanation,
+    )
+
+    rec.superseded_at = now
+    rec.supersession_reason = (
+        f"Capacity correction by {payload.corrected_by}: {payload.correction_notes}"
+    )
+    db.flush()
+    db.add(replacement)
+    db.flush()
+    rec.superseded_by_id = replacement.id
+    db.commit()
+    db.refresh(replacement)
+
+    response = PurchaseRecommendationResponse.model_validate(replacement)
+    response.sku_code = replacement.sku.sku_code
+    response.sku_name = replacement.sku.name
+    response.store_code = replacement.store.store_code
+    response.supplier_name = replacement.supplier.name
+    response.minimum_order_quantity = supplier_sku.minimum_order_quantity
+    response.pack_size = supplier_sku.pack_size
+    return response
 
 
 @router.post("/run", response_model=MessageResponse)
@@ -195,14 +400,34 @@ def run_replenishment_pipeline(
     existing_cycles_skipped = 0
 
     for store in stores:
-        # Calculate store's current total units on hand
+        store = db.scalar(
+            select(Store)
+            .where(Store.id == store.id)
+            .with_for_update()
+        )
+        if store is None or not store.is_active:
+            continue
+
+        # Serialize store capacity allocation and include existing physical and proposed occupancy.
         store_total_inv = db.scalar(
-            select(func.coalesce(func.sum(InventorySnapshot.closing_stock), 0))
+            select(func.coalesce(
+                func.sum(InventorySnapshot.closing_stock + InventorySnapshot.in_transit_stock),
+                0,
+            ))
             .where(
                 InventorySnapshot.store_id == store.id,
                 InventorySnapshot.snapshot_date == latest_date,
             )
         ) or 0
+        existing_recommendation_units = db.scalar(
+            select(func.coalesce(func.sum(PurchaseRecommendation.recommended_units), 0))
+            .where(
+                PurchaseRecommendation.store_id == store.id,
+                PurchaseRecommendation.superseded_at.is_(None),
+                PurchaseRecommendation.status.in_(["PENDING", "APPROVED"]),
+            )
+        ) or 0
+        store_total_inv += existing_recommendation_units
 
         # Query all active SKUs
         sku_query = select(SKU).where(SKU.is_active.is_(True)).order_by(SKU.id)
@@ -240,10 +465,13 @@ def run_replenishment_pipeline(
 
             # Sourcing info
             supp_sku = db.scalar(
-                select(SupplierSKU).where(
+                select(SupplierSKU)
+                .where(
                     SupplierSKU.sku_id == sku.id,
                     SupplierSKU.is_primary.is_(True),
                 )
+                .order_by(SupplierSKU.id)
+                .limit(1)
             )
             if not supp_sku:
                 continue
@@ -272,7 +500,7 @@ def run_replenishment_pipeline(
                     SalesHistory.sku_id == sku.id,
                     SalesHistory.store_id == store.id,
                 )
-                .order_by(SalesHistory.sale_date.desc())
+                .order_by(SalesHistory.sale_date.desc(), SalesHistory.id.desc())
                 .limit(30)
             ).all()
 
@@ -286,6 +514,10 @@ def run_replenishment_pipeline(
             lead_times = db.scalars(
                 select(LeadTimeObservation.actual_lead_time_days)
                 .where(LeadTimeObservation.supplier_sku_id == supp_sku.id)
+                .order_by(
+                    LeadTimeObservation.actual_delivery_date.desc(),
+                    LeadTimeObservation.id.desc(),
+                )
                 .limit(10)
             ).all()
 
@@ -336,7 +568,6 @@ def run_replenishment_pipeline(
                 lead_time_std_dev=std_lt,
                 store_current_total_units=store_total_inv,
                 evaluation_date=latest_date,
-                enforce_capacity=payload.enforce_capacity,
             )
 
             db_exceptions = [

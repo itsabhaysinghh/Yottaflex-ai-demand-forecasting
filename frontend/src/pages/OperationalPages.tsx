@@ -47,6 +47,15 @@ function TableHead({ labels }: { labels: string[] }) {
   return <thead className="bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-500"><tr>{labels.map((label) => <th key={label} className="whitespace-nowrap px-4 py-3">{label}</th>)}</tr></thead>
 }
 
+function hasCapacityBreach(recommendation: Recommendation) {
+  const check = recommendation.explanation.warehouse_capacity_check
+  return recommendation.status === 'FLAGGED_EXCEPTION'
+    && typeof check === 'object'
+    && check !== null
+    && 'capacity_breached' in check
+    && check.capacity_breached === true
+}
+
 function Pagination({ page, totalPages, total, onPage }: { page: number; totalPages: number; total: number; onPage: (page: number) => void }) {
   return (
     <div className="flex items-center justify-between border-t border-slate-100 px-4 py-3">
@@ -72,6 +81,7 @@ function statusTone(value: string | null | undefined): 'good' | 'warning' | 'dan
       return 'warning'
     case 'STOCKOUT':
     case 'REJECTED':
+    case 'FLAGGED_EXCEPTION':
     case 'CRITICAL':
     case 'HIGH':
       return 'danger'
@@ -463,6 +473,75 @@ function ReviewDialog({
   )
 }
 
+function CapacityCorrectionDialog({
+  open,
+  recommendation,
+  busy,
+  onOpenChange,
+  onConfirm,
+}: {
+  open: boolean
+  recommendation: Recommendation | null
+  busy: boolean
+  onOpenChange: (open: boolean) => void
+  onConfirm: (correctedBy: string, recommendedUnits: number, notes: string) => Promise<void>
+}) {
+  const [correctedBy, setCorrectedBy] = useState('')
+  const [recommendedUnits, setRecommendedUnits] = useState('')
+  const [notes, setNotes] = useState('')
+
+  useEffect(() => {
+    if (open) {
+      setCorrectedBy('')
+      setRecommendedUnits('')
+      setNotes('')
+    }
+  }, [open])
+
+  const quantity = Number(recommendedUnits)
+  const validQuantity = Number.isInteger(quantity) && quantity > 0
+  const packSize = recommendation?.pack_size ?? 1
+  const minimumQuantity = recommendation?.minimum_order_quantity ?? 1
+  const minimumPackRoundedQuantity = Math.ceil(minimumQuantity / packSize) * packSize
+
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-40 bg-slate-950/35 backdrop-blur-[2px]" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-32px)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-xl border border-slate-200 bg-white p-5 shadow-xl focus:outline-none">
+          <div className="mb-4 flex items-start justify-between gap-4">
+            <div>
+              <Dialog.Title className="text-base font-semibold text-slate-900">Correct capacity-flagged recommendation</Dialog.Title>
+              <Dialog.Description className="mt-1 text-sm text-slate-500">
+                The original will remain in history. Enter a replacement quantity that fits capacity and supplier terms.
+              </Dialog.Description>
+            </div>
+            <Dialog.Close asChild><button type="button" className="rounded-md p-1 text-slate-400 hover:bg-slate-100" aria-label="Close"><X size={17} /></button></Dialog.Close>
+          </div>
+          {recommendation && <p className="mb-3 text-xs text-slate-500">
+            {recommendation.sku_code} · {recommendation.store_code} · Current {formatNumber(recommendation.recommended_units)} units · MOQ / pack {recommendation.minimum_order_quantity ?? '—'} / {recommendation.pack_size ?? '—'}
+          </p>}
+          <label className="mb-3 block text-xs font-medium text-slate-600">Corrected quantity <span className="text-rose-600">*</span>
+            <Input aria-label="Corrected quantity" className="mt-1.5" type="number" min={minimumPackRoundedQuantity} step={packSize} value={recommendedUnits} onChange={(event) => setRecommendedUnits(event.target.value)} />
+          </label>
+          <label className="mb-3 block text-xs font-medium text-slate-600">Planner name <span className="text-rose-600">*</span>
+            <Input aria-label="Correction planner name" className="mt-1.5" value={correctedBy} minLength={2} maxLength={128} onChange={(event) => setCorrectedBy(event.target.value)} />
+          </label>
+          <label className="block text-xs font-medium text-slate-600">Correction notes <span className="text-rose-600">*</span>
+            <textarea aria-label="Correction notes" className="mt-1.5 min-h-20 w-full resize-y rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-600/10" maxLength={500} value={notes} onChange={(event) => setNotes(event.target.value)} />
+          </label>
+          <div className="mt-5 flex justify-end gap-2">
+            <Dialog.Close asChild><Button variant="outline">Cancel</Button></Dialog.Close>
+            <Button disabled={!validQuantity || correctedBy.trim().length < 2 || notes.trim().length < 3 || busy} onClick={() => void onConfirm(correctedBy.trim(), quantity, notes.trim())}>
+              {busy ? 'Saving…' : 'Create corrected replacement'}
+            </Button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  )
+}
+
 export function RecommendationsPage() {
   const [items, setItems] = useState<Recommendation[]>([])
   const [stores, setStores] = useState<Store[]>([])
@@ -473,6 +552,7 @@ export function RecommendationsPage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [reviewItem, setReviewItem] = useState<Recommendation | null>(null)
+  const [correctionItem, setCorrectionItem] = useState<Recommendation | null>(null)
   const [reviewStatus, setReviewStatus] = useState<'APPROVED' | 'REJECTED'>('APPROVED')
 
   const load = useCallback(async () => {
@@ -497,7 +577,7 @@ export function RecommendationsPage() {
   async function run() {
     setRunning(true)
     try {
-      const result = await api.runReplenishment({ store_id: storeId || undefined, enforce_capacity: true })
+      const result = await api.runReplenishment({ store_id: storeId || undefined })
       toast.success(result.message)
       await load()
     } catch (reason) {
@@ -522,6 +602,25 @@ export function RecommendationsPage() {
     }
   }
 
+  async function submitCorrection(correctedBy: string, recommendedUnits: number, notes: string) {
+    if (!correctionItem) return
+    setBusy(true)
+    try {
+      await api.correctRecommendation(correctionItem.id, {
+        recommended_units: recommendedUnits,
+        corrected_by: correctedBy,
+        correction_notes: notes,
+      })
+      toast.success('Capacity-compliant replacement created; the original remains in history.')
+      setCorrectionItem(null)
+      await load()
+    } catch (reason) {
+      toast.error(reason instanceof Error ? reason.message : 'Unable to correct recommendation.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div>
       <PageTitle eyebrow="Planning" title="Replenishment" description="Explainable purchase proposals with supplier terms and review controls." actions={<Button onClick={() => void run()} disabled={running}><Play size={15} />{running ? 'Calculating…' : 'Run replenishment'}</Button>} />
@@ -531,7 +630,7 @@ export function RecommendationsPage() {
             <Select className="mt-1.5" value={storeId} onChange={(event) => setStoreId(event.target.value)}><option value="">All stores</option>{stores.map((store) => <option key={store.id} value={store.id}>{store.store_code} · {store.name}</option>)}</Select>
           </label>
           <label className="block text-xs font-medium text-slate-600">Recommendation status
-            <Select className="mt-1.5" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All statuses</option><option value="PENDING">Pending</option><option value="APPROVED">Approved</option><option value="REJECTED">Rejected</option></Select>
+            <Select className="mt-1.5" value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All statuses</option><option value="PENDING">Pending</option><option value="FLAGGED_EXCEPTION">Capacity flagged</option><option value="APPROVED">Approved</option><option value="REJECTED">Rejected</option></Select>
           </label>
         </div>
       </Card>
@@ -558,7 +657,8 @@ export function RecommendationsPage() {
                     {item.status === 'PENDING' ? <div className="flex gap-1">
                       <Button size="sm" variant="outline" title="Approve recommendation" onClick={() => { setReviewStatus('APPROVED'); setReviewItem(item) }}><Check size={14} /></Button>
                       <Button size="sm" variant="outline" title="Reject recommendation" onClick={() => { setReviewStatus('REJECTED'); setReviewItem(item) }}><X size={14} /></Button>
-                    </div> : <span className="text-xs text-slate-400">{item.reviewed_by ?? 'Reviewed'}</span>}
+                    </div> : hasCapacityBreach(item) ? <Button size="sm" variant="outline" title="Correct capacity-flagged recommendation" onClick={() => setCorrectionItem(item)}>Correct</Button>
+                      : <span className="text-xs text-slate-400">{item.status === 'FLAGGED_EXCEPTION' ? 'Correction required' : item.reviewed_by ?? 'Reviewed'}</span>}
                   </td>
                 </tr>
               ))}
@@ -579,6 +679,7 @@ export function RecommendationsPage() {
         </div>
       </Card>
       <ReviewDialog open={Boolean(reviewItem)} title={reviewStatus === 'APPROVED' ? 'Approve recommendation' : 'Reject recommendation'} description={reviewItem ? `${reviewItem.sku_code} · ${reviewItem.store_code} · ${formatNumber(reviewItem.recommended_units)} units` : ''} confirmLabel={reviewStatus === 'APPROVED' ? 'Approve order' : 'Reject order'} destructive={reviewStatus === 'REJECTED'} busy={busy} onOpenChange={(open) => { if (!open) setReviewItem(null) }} onConfirm={submitReview} />
+      <CapacityCorrectionDialog open={Boolean(correctionItem)} recommendation={correctionItem} busy={busy} onOpenChange={(open) => { if (!open) setCorrectionItem(null) }} onConfirm={submitCorrection} />
     </div>
   )
 }
@@ -616,7 +717,9 @@ export function ExceptionsPage() {
     setBusy(true)
     try {
       await api.resolveException(active.id, reviewer, notes || undefined)
-      toast.success('Exception marked as resolved.')
+      toast.success(active.exception_type.includes('CAPACITY')
+        ? 'Exception resolved. The flagged recommendation still needs a capacity-compliant replacement before approval.'
+        : 'Exception marked as resolved.')
       setActive(null)
       await load()
     } catch (reason) {

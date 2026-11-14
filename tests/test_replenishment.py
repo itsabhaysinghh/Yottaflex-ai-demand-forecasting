@@ -48,6 +48,7 @@ def test_pack_size_rounding_and_moq_enforcement():
     # Raw qty = 5, pack size = 6, moq = 20 -> rounded to 24 (since 20 rounds up to multiple of 6)
     qty, added, moq_trig = enforce_pack_and_moq(raw_quantity=5, pack_size=6, moq=20)
     assert qty == 24
+    assert added == 19
     assert moq_trig is True
 
 
@@ -141,7 +142,7 @@ def test_fractional_target_order_quantity_rounds_up():
     assert recommendation["recommended_units"] == 13
 
 
-def test_capacity_check_can_be_explicitly_disabled():
+def test_capacity_is_enforced_without_a_request_option():
     sku = {"id": uuid.uuid4(), "sku_code": "SKU-CAPACITY", "is_active": True, "pack_size": 10, "unit_cost": Decimal("5.00")}
     store = {"id": uuid.uuid4(), "store_code": "STR-TIGHT", "warehouse_capacity_units": 100}
     supplier_sku = {"supplier_id": uuid.uuid4(), "pack_size": 10, "minimum_order_quantity": 200, "unit_cost": Decimal("5.00")}
@@ -152,11 +153,95 @@ def test_capacity_check_can_be_explicitly_disabled():
         reorder_policy={"target_service_level": 0.95, "review_period_days": 7},
         avg_daily_demand=15.0, demand_std_dev=3.0,
         lead_time_days=5.0, lead_time_std_dev=1.0, store_current_total_units=95,
-        evaluation_date=date.today(), enforce_capacity=False,
+        evaluation_date=date.today(),
     )
 
     assert recommendation is not None
+    assert recommendation["status"] == "FLAGGED_EXCEPTION"
+    assert recommendation["explanation"]["warehouse_capacity_check"]["capacity_breached"] is True
+    assert recommendation["explanation"]["warehouse_capacity_check"]["enforced"] is True
+    assert any(e["exception_type"] == "MOQ_CAPACITY_CONFLICT" for e in exceptions)
+
+
+def _evaluate_capacity_case(*, capacity, pack_size, moq):
+    sku = {
+        "id": uuid.uuid4(),
+        "sku_code": "SKU-CAPACITY-ROUNDING",
+        "is_active": True,
+        "pack_size": pack_size,
+        "unit_cost": Decimal("5.00"),
+    }
+    store = {
+        "id": uuid.uuid4(),
+        "store_code": "STR-CAPACITY",
+        "warehouse_capacity_units": capacity,
+    }
+    supplier_sku = {
+        "supplier_id": uuid.uuid4(),
+        "pack_size": pack_size,
+        "minimum_order_quantity": moq,
+        "unit_cost": Decimal("5.00"),
+    }
+    return ReplenishmentEngine.evaluate_sku_store_replenishment(
+        sku=sku,
+        store=store,
+        supplier_sku=supplier_sku,
+        current_inventory={"closing_stock": 0, "in_transit_stock": 0, "reserved_stock": 0},
+        reorder_policy={
+            "target_service_level": 0.50,
+            "review_period_days": 7,
+            "min_safety_stock_units": 0,
+        },
+        avg_daily_demand=1.0,
+        demand_std_dev=0,
+        lead_time_days=1,
+        lead_time_std_dev=0,
+        store_current_total_units=0,
+        evaluation_date=date.today(),
+    )
+
+
+def test_pack_rounding_over_capacity_creates_capacity_overflow_exception():
+    recommendation, exceptions = _evaluate_capacity_case(
+        capacity=10,
+        pack_size=6,
+        moq=1,
+    )
+
+    assert recommendation is not None
+    assert recommendation["raw_order_quantity"] == 8
+    assert recommendation["recommended_units"] == 12
+    assert recommendation["status"] == "FLAGGED_EXCEPTION"
+    assert any(exception["exception_type"] == "CAPACITY_OVERFLOW" for exception in exceptions)
+
+
+def test_pack_rounded_moq_over_capacity_creates_moq_conflict_exception():
+    recommendation, exceptions = _evaluate_capacity_case(
+        capacity=20,
+        pack_size=6,
+        moq=20,
+    )
+
+    assert recommendation is not None
+    assert recommendation["recommended_units"] == 24
+    assert recommendation["status"] == "FLAGGED_EXCEPTION"
+    exception = next(
+        exception for exception in exceptions
+        if exception["exception_type"] == "MOQ_CAPACITY_CONFLICT"
+    )
+    assert exception["payload"]["minimum_pack_rounded_order"] == 24
+
+
+def test_exact_fit_to_warehouse_capacity_is_accepted():
+    recommendation, exceptions = _evaluate_capacity_case(
+        capacity=12,
+        pack_size=6,
+        moq=1,
+    )
+
+    assert recommendation is not None
+    assert recommendation["recommended_units"] == 12
     assert recommendation["status"] == "PENDING"
-    assert recommendation["explanation"]["warehouse_capacity_check"]["enforced"] is False
+    assert recommendation["explanation"]["warehouse_capacity_check"]["capacity_breached"] is False
     assert exceptions == []
 

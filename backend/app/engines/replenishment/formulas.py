@@ -1,6 +1,15 @@
 import math
+from dataclasses import dataclass
 from typing import Tuple
 from scipy.stats import norm
+
+
+@dataclass(frozen=True)
+class ReorderPointCalculation:
+    lead_time_demand: float
+    safety_stock: int
+    sigma_ltd: float
+    reorder_point: int
 
 
 def get_z_score(service_level: float) -> float:
@@ -57,6 +66,37 @@ def calculate_reorder_point(lead_time_demand: float, safety_stock: int) -> int:
     return math.ceil(lead_time_demand) + safety_stock
 
 
+def calculate_reorder_point_details(
+    avg_daily_demand: float,
+    demand_std_dev: float,
+    avg_lead_time_days: float,
+    lead_time_std_dev: float,
+    service_level: float,
+    min_safety_stock: int,
+    max_safety_stock: int | None,
+) -> ReorderPointCalculation:
+    lead_time_demand = calculate_lead_time_demand(
+        avg_daily_demand,
+        avg_lead_time_days,
+    )
+    safety_stock, sigma_ltd = calculate_safety_stock(
+        avg_daily_demand=avg_daily_demand,
+        demand_std_dev=demand_std_dev,
+        avg_lead_time_days=avg_lead_time_days,
+        lead_time_std_dev=lead_time_std_dev,
+        service_level=service_level,
+        min_safety_stock=min_safety_stock,
+        max_safety_stock=max_safety_stock,
+    )
+    reorder_point = calculate_reorder_point(lead_time_demand, safety_stock)
+    return ReorderPointCalculation(
+        lead_time_demand=lead_time_demand,
+        safety_stock=safety_stock,
+        sigma_ltd=sigma_ltd,
+        reorder_point=reorder_point,
+    )
+
+
 def enforce_pack_and_moq(raw_quantity: int, pack_size: int, moq: int) -> Tuple[int, int, bool]:
     """
     Enforces master pack size multiples and minimum order quantity:
@@ -76,6 +116,7 @@ def enforce_pack_and_moq(raw_quantity: int, pack_size: int, moq: int) -> Tuple[i
         moq_applied = True
         # Round MOQ up to pack multiple if needed
         final_qty = math.ceil(moq / pack) * pack
+    units_added = final_qty - raw_quantity
 
     return final_qty, units_added, moq_applied
 

@@ -5,9 +5,7 @@ from decimal import Decimal
 from typing import Dict, Any, Tuple, Optional, List
 
 from app.engines.replenishment.formulas import (
-    calculate_lead_time_demand,
-    calculate_safety_stock,
-    calculate_reorder_point,
+    calculate_reorder_point_details,
     enforce_pack_and_moq,
     get_z_score,
 )
@@ -33,7 +31,6 @@ class ReplenishmentEngine:
         lead_time_std_dev: float,
         store_current_total_units: int,
         evaluation_date: date,
-        enforce_capacity: bool = True,
     ) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Evaluates a single SKU-Store pair for replenishment need.
@@ -68,16 +65,12 @@ class ReplenishmentEngine:
         max_ss = reorder_policy.get("max_safety_stock_units")
         review_days = int(reorder_policy.get("review_period_days", 7))
 
-        pack_size = int(supplier_sku.get("pack_size", sku.get("pack_size", 1)))
+        pack_size = max(1, int(supplier_sku.get("pack_size", sku.get("pack_size", 1))))
         moq = int(supplier_sku.get("minimum_order_quantity", 1))
         unit_cost = Decimal(str(supplier_sku.get("unit_cost", sku.get("unit_cost", "0.00"))))
 
         # 4. Inventory calculations
-        ltd = calculate_lead_time_demand(
-            avg_daily_demand=avg_daily_demand,
-            avg_lead_time_days=lead_time_days,
-        )
-        safety_stock, sigma_ltd = calculate_safety_stock(
+        calculation = calculate_reorder_point_details(
             avg_daily_demand=avg_daily_demand,
             demand_std_dev=demand_std_dev,
             avg_lead_time_days=lead_time_days,
@@ -86,7 +79,10 @@ class ReplenishmentEngine:
             min_safety_stock=min_ss,
             max_safety_stock=max_ss,
         )
-        rop = calculate_reorder_point(lead_time_demand=ltd, safety_stock=safety_stock)
+        ltd = calculation.lead_time_demand
+        safety_stock = calculation.safety_stock
+        sigma_ltd = calculation.sigma_ltd
+        rop = calculation.reorder_point
 
         # 5. Order trigger condition
         if net_ip > rop:
@@ -108,13 +104,14 @@ class ReplenishmentEngine:
         # 6. Warehouse capacity validation
         capacity = int(store.get("warehouse_capacity_units", 50000))
         remaining_capacity = max(0, capacity - store_current_total_units)
+        minimum_pack_rounded_moq = math.ceil(moq / pack_size) * pack_size
 
         status = "PENDING"
         capacity_flag = False
 
-        if enforce_capacity and recommended_units > remaining_capacity:
+        if recommended_units > remaining_capacity:
             capacity_flag = True
-            if moq > remaining_capacity:
+            if minimum_pack_rounded_moq > remaining_capacity:
                 status = "FLAGGED_EXCEPTION"
                 exceptions.append({
                     "id": uuid.uuid4(),
@@ -124,11 +121,15 @@ class ReplenishmentEngine:
                     "exception_type": "MOQ_CAPACITY_CONFLICT",
                     "severity": "CRITICAL",
                     "description": (
-                        f"Supplier MOQ of {moq} units exceeds store {store.get('store_code')} "
+                        f"Supplier MOQ of {moq} units requires a pack-rounded minimum of "
+                        f"{minimum_pack_rounded_moq} units, exceeding store "
+                        f"{store.get('store_code')} "
                         f"remaining warehouse capacity of {remaining_capacity} units."
                     ),
                     "payload": {
                         "moq": moq,
+                        "pack_size": pack_size,
+                        "minimum_pack_rounded_order": minimum_pack_rounded_moq,
                         "remaining_capacity": remaining_capacity,
                         "store_capacity": capacity,
                         "store_code": store.get("store_code"),
@@ -191,7 +192,7 @@ class ReplenishmentEngine:
                 "current_store_utilization": store_current_total_units,
                 "remaining_capacity": remaining_capacity,
                 "capacity_breached": capacity_flag,
-                "enforced": enforce_capacity,
+                "enforced": True,
             },
         }
 

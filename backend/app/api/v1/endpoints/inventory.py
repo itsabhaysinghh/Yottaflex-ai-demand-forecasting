@@ -7,6 +7,11 @@ from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.engines.replenishment.classification import (
+    inventory_status_expression,
+    load_inventory_reorder_points,
+    reorder_point_expression,
+)
 from app.models.inventory import InventorySnapshot
 from app.models.sku import SKU
 from app.models.store import Store
@@ -44,6 +49,7 @@ def list_inventory(
     sort_order: Literal["asc", "desc"] = "desc",
     db: Session = Depends(get_db),
 ):
+    reorder_point_calculations = load_inventory_reorder_points(db)
     latest_recommendations = (
         select(
             PurchaseRecommendation.sku_id,
@@ -78,18 +84,34 @@ def list_inventory(
         + InventorySnapshot.in_transit_stock
         - InventorySnapshot.reserved_stock
     )
-    inventory_status = case(
-        (SKU.is_active.is_(False), "UNKNOWN"),
-        (
-            InventorySnapshot.stockout_flag.is_(True) | (available_units == 0),
-            "STOCKOUT",
-        ),
-        (latest_recommendations.c.reorder_point.is_(None), "UNKNOWN"),
-        (
-            inventory_position <= latest_recommendations.c.reorder_point,
-            "LOW",
-        ),
-        else_="HEALTHY",
+    calculated_reorder_point = reorder_point_expression(
+        reorder_point_calculations,
+        InventorySnapshot.sku_id,
+        InventorySnapshot.store_id,
+        "reorder_point",
+    )
+    effective_reorder_point = func.coalesce(
+        latest_recommendations.c.reorder_point,
+        calculated_reorder_point,
+    )
+    calculated_safety_stock = reorder_point_expression(
+        reorder_point_calculations,
+        InventorySnapshot.sku_id,
+        InventorySnapshot.store_id,
+        "safety_stock",
+    )
+    safety_stock_units = func.coalesce(
+        latest_recommendations.c.safety_stock,
+        calculated_safety_stock,
+        ReorderPolicy.min_safety_stock_units,
+    )
+    inventory_status = inventory_status_expression(
+        SKU.is_active,
+        Store.is_active,
+        InventorySnapshot.stockout_flag,
+        available_units,
+        inventory_position,
+        effective_reorder_point,
     )
 
     query = (
@@ -100,11 +122,8 @@ def list_inventory(
             SKU.category.label("category"),
             Store.store_code.label("store_code"),
             available_units.label("available_units"),
-            latest_recommendations.c.reorder_point.label("reorder_point"),
-            func.coalesce(
-                latest_recommendations.c.safety_stock,
-                ReorderPolicy.min_safety_stock_units,
-            ).label("safety_stock_units"),
+            effective_reorder_point.label("reorder_point"),
+            safety_stock_units.label("safety_stock_units"),
             inventory_status.label("inventory_status"),
         )
         .join(SKU, InventorySnapshot.sku_id == SKU.id)
@@ -133,7 +152,7 @@ def list_inventory(
     if snapshot_date:
         query = query.where(InventorySnapshot.snapshot_date == snapshot_date)
     if stockout_only:
-        query = query.where(InventorySnapshot.stockout_flag.is_(True))
+        query = query.where(inventory_status == "STOCKOUT")
     if category:
         query = query.where(SKU.category == category)
     if search:
@@ -152,7 +171,7 @@ def list_inventory(
         "category": SKU.category,
         "available_units": available_units,
         "incoming_units": InventorySnapshot.in_transit_stock,
-        "reorder_point": latest_recommendations.c.reorder_point,
+        "reorder_point": effective_reorder_point,
         "inventory_status": inventory_status,
     }
     sort_column = sort_columns[sort_by]
